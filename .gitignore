@@ -1,1 +1,2 @@
-data/constructicon/*.*
+/data/constructicon/**
+/libs/**/

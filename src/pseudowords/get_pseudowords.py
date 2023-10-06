@@ -12,7 +12,7 @@ from transformers import AdamW
 import torch
 import torch.nn as nn
 import torch.optim
-from tqdm import trange, tqdm
+from tqdm import trange
 import jsonlines
 import json
 import numpy as np
@@ -326,7 +326,7 @@ if __name__ == '__main__':
     tokenizer = BertTokenizer.from_pretrained('bert-base-cased')
     builder = DataBuilder(tokenizer)
     co = Coercion(builder)
-    for entry in tqdm(data):
+    for entry in data:
         co.coercion(entry)
         print('=='*40)
 

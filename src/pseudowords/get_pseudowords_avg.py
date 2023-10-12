@@ -143,15 +143,17 @@ class Coercion:
             # After training
             print('After training:')
             nlp = FillMaskPipeline(model, self.builder.tokenizer, device=0)
-            output = nlp(new_query)
-            output = self._format(output)
-            print('[MASK]=' + str(output))
+            for new_query in set(new_queries):  # only view different queries
+                print("query: " + new_query)
+                output = nlp(new_query)
+                output = self._format(output)
+                print('[MASK]=' + str(output))
 
-            outputs_list.append(output)
+                outputs_list.append(output)
 
-            output = self._predict_z(model, query)
-            output = self._format(output)
-            print(NEW_TOKEN + '=' + str(output))
+                output = self._predict_z(model, query)
+                output = self._format(output)
+                print(NEW_TOKEN + '=' + str(output))
             print("*************************************************************************")
 
     def _train(self, model, vec_targets, queries):
@@ -164,27 +166,27 @@ class Coercion:
             num_training_steps=epoch)
 
         input_ids_and_gather_indexes = [self.builder.encode(query[0]) for query in queries]
-        input_ids = [input_id for input_id in [i for i, _ in input_ids_and_gather_indexes]]
+        input_ids = torch.cat([input_id for input_id in [i for i, _ in input_ids_and_gather_indexes]], dim=0).to("cuda")
         gather_indexes = [gather_index for gather_index in [g for _, g in input_ids_and_gather_indexes]]
 
         # target_idx is the index of target word in the token list.
-        target_idx = [g[q[1] + 1][0] for g, q in zip(gather_indexes, queries)]
+        target_idxs = [g[q[1] + 1][0] for g, q in zip(gather_indexes, queries)]
+        target_idxs = torch.tensor(target_idxs, device="cuda").unsqueeze(-1)
         # token_idx is the index of target word in the vocabulary of BERT
-        token_idx = [input_id[0][target_idx] for input_id in input_ids]
-        input_ids = torch.stack(input_ids).to('cuda')
+        token_idxs = input_ids.gather(dim=-1, index=target_idxs)
         vocab_size = len(tokenizer.get_vocab())
-        # TODO:
-        indices = [i for i, t in zip(range(vocab_size), token_idx) if i != t]
-        token_idx = torch.stack(token_idx).to('cuda')
-        indices = torch.LongTensor(indices)
+        min_token_idx = min(token_idxs)
+        indices = torch.tensor([i for i in range(vocab_size) if i < min_token_idx], device="cuda", dtype=torch.long)
+
+        # TODO Continue adjusting the script from here:
         vec_arrays = []
 
         for _ in trange(epoch):
             model.zero_grad()
             outputs = model(input_ids, output_hidden_states=True)
-            z = outputs.hidden_states[-1][0][target_idx]
+            z = torch.index_select(outputs.hidden_states[12][0], dim=0, index=target_idxs.squeeze(-1))
 
-            loss = loss_fct(z, torch.stack(vec_targets)[:, 0])
+            loss = loss_fct(z, torch.stack(vec_targets))
 
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -194,17 +196,11 @@ class Coercion:
 
             # try to fix the feed-forward bug
             outputs = model(input_ids, output_hidden_states=True)
-            bert_z = outputs.hidden_states[12][0][target_idx]
+            bert_z = torch.index_select(outputs.hidden_states[12][0], dim=0, index=target_idxs.squeeze(-1))
 
         # get the z* for classification
-        weight = model.bert.embeddings.word_embeddings.weight.data[token_idx]
-        vec = model.bert.embeddings.word_embeddings(token_idx)[0]  # this is z*
+        vec = model.bert.embeddings.word_embeddings(token_idxs).squeeze(1)  # this is z*
         vec_array = vec.cpu().detach().numpy()
-        vec_arrays.append(vec_array)
-
-        vec_arrays = vec_arrays.numpy()
-        mean_vec_array = vec_arrays.mean(axis=0)
-
         z_list.append(vec_array)
         loss_list.append(str(loss.cpu().detach().numpy()))
 

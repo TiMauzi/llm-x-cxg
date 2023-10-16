@@ -199,14 +199,18 @@ class Coercion:
             bert_z = torch.index_select(outputs.hidden_states[12][0], dim=0, index=target_idxs.squeeze(-1))
 
         # get the z* for classification
-        vec = model.bert.embeddings.word_embeddings(token_idxs).squeeze(1)  # this is z*
+        vec = model.bert.embeddings.word_embeddings(token_idxs).squeeze(1)[0]  # this is z*; [0] because all the same
         vec_array = vec.cpu().detach().numpy()
         z_list.append(vec_array)
         loss_list.append(str(loss.cpu().detach().numpy()))
 
         # save checkpoints
-        np.save(CACHE + "temp_z_arrays.npy", np.array(z_list))
-        np.save(CACHE + "temp_loss_arrays.npy", np.array(loss_list))
+        try:
+            np.save(CACHE + "temp_z_arrays.npy", np.array(z_list))
+            np.save(CACHE + "temp_loss_arrays.npy", np.array(loss_list))
+        except:
+            # TODO Why?
+            print("Skip saving this time...")
 
         s = 'Final loss={a}'.format(a=str(loss.cpu().detach().numpy()))
         print(s)

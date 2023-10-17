@@ -30,7 +30,7 @@ Item = Tuple[str, int]
 Example = Tuple[Item, Item]
 
 # ARGS
-QUERIES_PATH = "../../libs/pwibm/data/queries/single_target/MaPP_all.txt"  # path to queries
+QUERIES_PATH = "./MaPP_all.txt"  # path to queries
 DIR_OUT = "../../out/"  # path to dir to save the pseudowords
 CACHE = "../../out/cache/"  # path to cach directory
 
@@ -41,19 +41,24 @@ class DataBuilder:
     def __init__(self, tokenizer: AutoTokenizer):
         self.tokenizer = tokenizer
 
-    def encode(self, text: str):
+    def encode(self, text: str, max_length=None):
         tokens = text.split()
         # Build token indices
         _, gather_indexes = self._manual_tokenize(tokens)
         # Tokenization
-        encode_dict = self.tokenizer(
-            text, return_attention_mask=True,
-            return_token_type_ids=False, return_tensors='pt')
+        if max_length:
+            encode_dict = self.tokenizer(
+                text, return_attention_mask=True,
+                return_token_type_ids=False, return_tensors='pt',
+                padding='max_length', max_length=max_length)
+        else:
+            encode_dict = self.tokenizer(
+                text, return_attention_mask=True,
+                return_token_type_ids=False, return_tensors='pt')
         input_ids = encode_dict['input_ids']
         return input_ids, gather_indexes
 
     def _manual_tokenize(self, tokens: List[str]):
-
         split_tokens = []
         gather_indexes = []
         for token in tokens:
@@ -165,7 +170,8 @@ class Coercion:
             num_warmup_steps=0,
             num_training_steps=epoch)
 
-        input_ids_and_gather_indexes = [self.builder.encode(query[0]) for query in queries]
+        max_length = 1 + max([len(self.builder.encode(query[0])[1]) for query in queries])  # possible padding
+        input_ids_and_gather_indexes = [self.builder.encode(query[0], max_length=max_length) for query in queries]
         input_ids = torch.cat([input_id for input_id in [i for i, _ in input_ids_and_gather_indexes]], dim=0).to("cuda")
         gather_indexes = [gather_index for gather_index in [g for _, g in input_ids_and_gather_indexes]]
 
@@ -178,7 +184,6 @@ class Coercion:
         min_token_idx = min(token_idxs)
         indices = torch.tensor([i for i in range(vocab_size) if i < min_token_idx], device="cuda", dtype=torch.long)
 
-        # TODO Continue adjusting the script from here:
         vec_arrays = []
 
         for _ in trange(epoch):

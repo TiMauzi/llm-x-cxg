@@ -29,7 +29,8 @@ Item = Tuple[str, int]
 Example = Tuple[Item, Item]
 
 # ARGS
-QUERIES_PATH = "./CoMaPP_all.txt"  # path to queries
+QUERIES_PATH = "../../out/CoMaPP_all.json"  # path to queries
+DATASET_PATH = "CoMaPP_Dataset.csv"
 DIR_OUT = "../../out/"  # path to dir to save the pseudowords
 CACHE = "../../out/cache/"  # path to cach directory
 
@@ -85,8 +86,7 @@ class Coercion:
     def coercion(self,
                  group,
                  k: int = 5):
-        model = MBartForConditionalGeneration.from_pretrained(
-            "facebook/mbart-large-50", return_dict=True)
+        model = MBartForConditionalGeneration.from_pretrained("facebook/mbart-large-50", return_dict=True)
         model.to('cuda')
 
         self.builder.tokenizer.add_tokens(NEW_TOKEN)
@@ -104,7 +104,7 @@ class Coercion:
                 if ('target' + str(i)) not in entry.keys():
                     break
                 print('target ' + str(i) + ': ' + entry["target" + str(i)] + " , " + str(entry["target" + str(i) + "_idx"]))
-            print('query:' + entry["query"] + " , " + str(entry["query_idx"]))
+            print('query: ' + entry["query"] + " , " + str(entry["query_idx"]))
 
             # Model output
             # TODO: https://huggingface.co/docs/transformers/v4.34.1/en/main_classes/pipelines#transformers.FillMaskPipeline
@@ -112,7 +112,7 @@ class Coercion:
             #nlp = FillMaskPipeline(model, self.builder.tokenizer, device=0)
             #output = nlp(entry["query"])
             #output = self._format(output)
-            #print('<MASK> = ' + str(output))
+            #print('<mask> = ' + str(output))
 
             # TODO new approach needed!
             #input_ids = self.builder.encode(entry["query"])[0].to('cuda')
@@ -123,10 +123,11 @@ class Coercion:
 
             for j in range(1, i):
                 vec_targets.append(
-                    self._get_target_embed((entry["target" + str(j)], entry["target" + str(j) + "_idx"]), model))
+                    self._get_target_embed((entry["target" + str(j)], entry["target" + str(j) + "_idx"]), model)
+                )
 
             new_query = entry["query"].split()
-            new_query[entry["query_idx"]] = NEW_TOKEN
+            new_query[entry["query_idx"]] = NEW_TOKEN  # TODO IndexError weil die Indizes noch nicht adjusted sind (done, muss noch getestet werden)
             new_query = ' '.join(new_query)
             query = (new_query, entry["query_idx"])
             print(query)
@@ -339,9 +340,9 @@ if __name__ == '__main__':
     with open(QUERIES_PATH) as json_file:
         data = json.load(json_file)
     # Read the columns "query" and "label" from "./data/MaPP_Dataset.csv" and save them as a dictionary:
-    with open("./MaPP_Dataset.csv") as csv_file:
+    with open(DATASET_PATH) as csv_file:
         csv_reader = csv.reader(csv_file, delimiter=',')
-        labels = {row[0]: row[2] + row[5] for row in csv_reader}
+        labels = {row[0]: row[2].replace(" ", "") + row[3] for row in csv_reader}
     # Add labels to data:
     for d in data:
         try:
@@ -351,8 +352,7 @@ if __name__ == '__main__':
     # Group the dataset into a list of lists where the label of the dictionaries is identical:
     data = [list(g) for _, g in itertools.groupby(data, key=lambda x: x["label"])]
 
-    # TODO de_DE:
-    tokenizer = MBart50Tokenizer.from_pretrained("facebook/mbart-large-50", src_lang="en_XX", tgt_lang="en_XX")
+    tokenizer = MBart50Tokenizer.from_pretrained("facebook/mbart-large-50", src_lang="de_DE", tgt_lang="de_DE")
     builder = DataBuilder(tokenizer)
     co = Coercion(builder)
     for group in data:

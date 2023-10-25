@@ -5,14 +5,13 @@ import csv
 import itertools
 from typing import List, Tuple, TextIO
 
-from transformers import AutoTokenizer, MBart50Tokenizer, MBartForConditionalGeneration, FillMaskPipeline
-from transformers import TextGenerationPipeline
+from transformers import AutoTokenizer, MBart50Tokenizer, MBartForConditionalGeneration, Text2TextGenerationPipeline
 from transformers import get_linear_schedule_with_warmup
 from transformers import AdamW
 import torch
 import torch.nn as nn
 import torch.optim
-from tqdm import trange
+from tqdm import trange, tqdm
 import jsonlines
 import json
 import numpy as np
@@ -148,14 +147,16 @@ class Coercion:
 
             # Before training
             print('Before training:')
-            nlp = TextGenerationPipeline(model=model, tokenizer=self.builder.tokenizer, device=0)
+            # We need a Text2TextGeneration here, because mBart is created for translation, originally.
+            # Only this way, there can be multiple predicted words for one <mask>.
+            nlp = Text2TextGenerationPipeline(model=model, tokenizer=self.builder.tokenizer, device=0)
 
             model = self._train(model, vec_targets, queries)
 
             print("*************************************************************************")
             # After training
             print('After training:')
-            nlp = TextGenerationPipeline(model=model, tokenizer=self.builder.tokenizer, device=0)
+            nlp = Text2TextGenerationPipeline(model=model, tokenizer=self.builder.tokenizer, device=0)
             for new_query in set(new_queries):  # only view different queries
                 print("query: " + new_query)
                 output = nlp(new_query)
@@ -178,7 +179,13 @@ class Coercion:
             num_warmup_steps=0,
             num_training_steps=epoch)
 
-        max_length = 1 + max([len(self.builder.encode(query[0])[1]) for query in queries])  # possible padding
+        # This snippet, retrieving the possible padding, does the following:
+        #  (a) encode each query's text (first [0]),
+        #  (b) get the input_ids (second [0]),
+        #  (c) count the input_ids (.shape[-1], because the number of input_ids is stored in the second/last dimension).
+        # Then, you can take the max to know how much you should pad the rest.
+        max_length = max([(self.builder.encode(query[0])[0]).shape[-1] for query in queries])
+
         input_ids_and_gather_indexes = [self.builder.encode(query[0], max_length=max_length) for query in queries]
         input_ids = torch.cat([input_id for input_id in [i for i, _ in input_ids_and_gather_indexes]], dim=0).to("cuda")
         gather_indexes = [gather_index for gather_index in [g for _, g in input_ids_and_gather_indexes]]
@@ -190,9 +197,8 @@ class Coercion:
         token_idxs = input_ids.gather(dim=-1, index=target_idxs)
         vocab_size = len(tokenizer.get_vocab())
         min_token_idx = min(token_idxs)
+        # Get all indices smaller than the new token_idx:
         indices = torch.tensor([i for i in range(vocab_size) if i < min_token_idx], device="cuda", dtype=torch.long)
-
-        vec_arrays = []
 
         for _ in trange(epoch):
             optimizer.zero_grad()
@@ -339,18 +345,23 @@ if __name__ == '__main__':
 
     with open(QUERIES_PATH) as json_file:
         data = json.load(json_file)
-    # Read the columns "query" and "label" from "./data/MaPP_Dataset.csv" and save them as a dictionary:
-    with open(DATASET_PATH) as csv_file:
-        csv_reader = csv.reader(csv_file, delimiter=',')
-        labels = {row[0]: row[2].replace(" ", "") + row[3] for row in csv_reader}
-    # Add labels to data:
-    for d in data:
-        try:
-            d["label"] = labels[d["target1"]]
-        except KeyError:
-            d["label"] = labels[d["target1"].strip()]
+
+    # This is not necessary anymore, since the correct labels are already created beforehand:
+    #
+    # Read the columns "query" and "label" from "./data/MaPP_Dataset.csv" and save them as a relation (set of tuples):
+    # with open(DATASET_PATH) as csv_file:
+    #     csv_reader = csv.reader(csv_file, delimiter=',')
+    #     labels = {(row[0], row[2] + row[3]) for row in csv_reader}
+    # # Add labels to data:
+    # for d in tqdm(data):
+    #     try:
+    #         d["label"] = [label for (query, label) in labels if query == d["target1"]]  # labels[d["target1"]]
+    #     except KeyError:
+    #         d["label"] = [label for (query, label) in labels if query == d["target1"].strip()]
+
     # Group the dataset into a list of lists where the label of the dictionaries is identical:
-    data = [list(g) for _, g in itertools.groupby(data, key=lambda x: x["label"])]
+    data.sort(key=lambda x: x["label"])  # Grouping doesn't work without sorting first!
+    data = [list(group) for _, group in itertools.groupby(data, key=lambda x: x["label"])]
 
     tokenizer = MBart50Tokenizer.from_pretrained("facebook/mbart-large-50", src_lang="de_DE", tgt_lang="de_DE")
     builder = DataBuilder(tokenizer)

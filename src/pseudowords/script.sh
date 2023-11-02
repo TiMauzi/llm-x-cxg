@@ -19,7 +19,7 @@ total_tasks=843  # Change this to the number of tasks you want
 
 for task_id in $(seq 0 $((total_tasks - 1))); do
     # Launch the Python script with the task-specific input
-    python parallelize.py --task_id $task_id &
+    python3 -u par_get_kee_pseudowords_avg.py --task_id $task_id &
 done
 
 # Wait for all tasks to complete

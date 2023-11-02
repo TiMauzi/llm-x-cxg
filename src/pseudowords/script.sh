@@ -6,8 +6,8 @@
 #SBATCH --mail-user=tim.sockel@campus.lmu.de
 #SBATCH --chdir=/home/s/sockel/Desktop/llm-x-cxg/src/pseudowords
 #SBATCH --output=/home/s/sockel/Desktop/llm-x-cxg/out/slurm.%A.%a.%j.%N.out
-#SBATCH --nodes=15  # Set the number of nodes
-#SBATCH --ntasks-per-node=1  # Set the number of tasks per node
+#SBATCH --array=1-15
+#SBATCH --ntasks-per-node=1
 
 # Calculate total_tasks using a subshell and Python
 total_tasks=$(python -c "import itertools

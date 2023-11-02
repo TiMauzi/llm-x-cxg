@@ -9,12 +9,16 @@
 #SBATCH --nodes=15  # Set the number of nodes
 #SBATCH --ntasks-per-node=1  # Set the number of tasks per node
 
-# Load necessary modules and activate your virtual environment if needed
-module load python
-conda activate llm-cxg
+# Calculate total_tasks using a subshell and Python
+total_tasks=$(python -c "import itertools
+import json
+with open(QUERIES_PATH) as json_file:
+    data = json.load(json_file)
+data.sort(key=lambda x: x['label'])
+data = [list(group) for _, group in itertools.groupby(data, key=lambda x: x['label'])]
+print(len(data))")
 
-# Define the total number of tasks and loop over them
-total_tasks=843  # Change this to the number of tasks you want
+echo "Total Tasks: $total_tasks" >> $SLURM_JOB_OUT
 
 for task_id in $(seq 0 $((total_tasks - 1))); do
     # Launch the Python script with the task-specific input

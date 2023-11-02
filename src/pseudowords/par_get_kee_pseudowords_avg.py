@@ -87,7 +87,7 @@ class Coercion:
     def coercion(self,
                  group,
                  k: int = 5):
-        model = MBartForConditionalGeneration.from_pretrained("facebook/mbart-large-cc25", return_dict=True)
+        model = MBartForConditionalGeneration.from_pretrained("facebook/mbart-large-50", return_dict=True)
         model.to('cuda')
 
         self.builder.tokenizer.add_tokens(NEW_TOKEN)
@@ -166,8 +166,9 @@ class Coercion:
 
     def _train(self, model, vec_targets, queries):
         loss_fct = nn.MSELoss(reduction='mean')  # mean will be computed later
-        optimizer = torch.optim.AdamW(model.parameters(), lr=0.3, eps=1e-8)
-        epoch = 1000
+        optimizer = torch.optim.AdamW(model.parameters(), lr=0.03, # lr=0.3
+                                      eps=1e-8)
+        epoch = 20  # 1000
         scheduler = get_linear_schedule_with_warmup(
             optimizer,
             num_warmup_steps=0,
@@ -372,7 +373,7 @@ if __name__ == '__main__':
     data.sort(key=lambda x: x["label"])  # Grouping doesn't work without sorting first!
     data = [list(group) for _, group in itertools.groupby(data, key=lambda x: x["label"])]
 
-    tokenizer = MBartTokenizer.from_pretrained("facebook/mbart-large-cc25", src_lang="de_DE", tgt_lang="de_DE")
+    tokenizer = MBart50Tokenizer.from_pretrained("facebook/mbart-large-50", src_lang="de_DE", tgt_lang="de_DE")
     builder = DataBuilder(tokenizer)
     co = Coercion(builder)
     co.coercion(data[args.task_id])

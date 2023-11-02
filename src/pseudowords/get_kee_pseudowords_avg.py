@@ -5,7 +5,8 @@ import csv
 import itertools
 from typing import List, Tuple, TextIO
 
-from transformers import AutoTokenizer, MBart50Tokenizer, MBartForConditionalGeneration, Text2TextGenerationPipeline
+from transformers import AutoTokenizer, MBart50Tokenizer, MBartForConditionalGeneration, Text2TextGenerationPipeline, \
+    MBartTokenizer, MBart50TokenizerFast
 from transformers import get_linear_schedule_with_warmup
 from transformers import AdamW
 import torch
@@ -165,7 +166,7 @@ class Coercion:
     def _train(self, model, vec_targets, queries):
         loss_fct = nn.MSELoss(reduction='mean')  # mean will be computed later
         optimizer = torch.optim.AdamW(model.parameters(), lr=0.3, eps=1e-8)
-        epoch = 1000
+        epoch = 10 # todo 1000
         scheduler = get_linear_schedule_with_warmup(
             optimizer,
             num_warmup_steps=0,

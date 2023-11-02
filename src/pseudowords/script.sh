@@ -6,8 +6,7 @@
 #SBATCH --mail-user=tim.sockel@campus.lmu.de
 #SBATCH --chdir=/home/s/sockel/Desktop/llm-x-cxg/src/pseudowords
 #SBATCH --output=/home/s/sockel/Desktop/llm-x-cxg/out/slurm.%A.%a.%j.%N.out
-#SBATCH --array=1-15
-#SBATCH --ntasks-per-node=1
+#SBATCH --array=1-15  # Set the number of tasks as an array
 
 # Calculate total_tasks using a subshell and Python
 total_tasks=$(python -c "import itertools
@@ -18,12 +17,10 @@ data.sort(key=lambda x: x['label'])
 data = [list(group) for _, group in itertools.groupby(data, key=lambda x: x['label'])]
 print(len(data))")
 
+# Print total_tasks to the output file
 echo "Total Tasks: $total_tasks"
 
-for task_id in $(seq 0 $((total_tasks - 1))); do
-    # Launch the Python script with the task-specific input
-    python3 -u par_get_kee_pseudowords_avg.py --task_id $task_id &
-done
+python3 -u par_get_kee_pseudowords_avg.py --task_id $SLURM_ARRAY_TASK_ID
 
-# Wait for all tasks to complete
+# Wait for the task to complete
 wait

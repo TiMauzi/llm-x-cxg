@@ -18,7 +18,7 @@ data.sort(key=lambda x: x['label'])
 data = [list(group) for _, group in itertools.groupby(data, key=lambda x: x['label'])]
 print(len(data))")
 
-echo "Total Tasks: $total_tasks" >> $SLURM_JOB_OUT
+echo "Total Tasks: $total_tasks" >> "/home/s/sockel/Desktop/llm-x-cxg/out/slurm.$SLURM_JOB_ID.$SLURM_NODEID.out"
 
 for task_id in $(seq 0 $((total_tasks - 1))); do
     # Launch the Python script with the task-specific input

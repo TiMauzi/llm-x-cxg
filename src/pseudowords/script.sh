@@ -5,7 +5,7 @@
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=tim.sockel@campus.lmu.de
 #SBATCH --chdir=/home/s/sockel/Desktop/llm-x-cxg/src/pseudowords
-#SBATCH --output=/home/s/sockel/Desktop/llm-x-cxg/out/slurm.%j.%N.out
+#SBATCH --output=/home/s/sockel/Desktop/llm-x-cxg/out/slurm.%A.%a.%j.%N.out
 #SBATCH --nodes=15  # Set the number of nodes
 #SBATCH --ntasks-per-node=1  # Set the number of tasks per node
 
@@ -18,7 +18,7 @@ data.sort(key=lambda x: x['label'])
 data = [list(group) for _, group in itertools.groupby(data, key=lambda x: x['label'])]
 print(len(data))")
 
-echo "Total Tasks: $total_tasks" >> "/home/s/sockel/Desktop/llm-x-cxg/out/slurm.$SLURM_JOB_ID.$SLURM_NODEID.out"
+echo "Total Tasks: $total_tasks"
 
 for task_id in $(seq 0 $((total_tasks - 1))); do
     # Launch the Python script with the task-specific input

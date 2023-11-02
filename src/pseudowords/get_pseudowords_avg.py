@@ -170,6 +170,7 @@ class Coercion:
             num_warmup_steps=0,
             num_training_steps=epoch)
 
+        # TODO Why is it different from get_kee_pseudowords_avg?
         max_length = 1 + max([len(self.builder.encode(query[0])[1]) for query in queries])  # possible padding
         input_ids_and_gather_indexes = [self.builder.encode(query[0], max_length=max_length) for query in queries]
         input_ids = torch.cat([input_id for input_id in [i for i, _ in input_ids_and_gather_indexes]], dim=0).to("cuda")
@@ -180,7 +181,7 @@ class Coercion:
         target_idxs = torch.tensor(target_idxs, device="cuda").unsqueeze(-1)
         # token_idx is the index of target word in the vocabulary of BERT
         token_idxs = input_ids.gather(dim=-1, index=target_idxs)
-        vocab_size = len(tokenizer.get_vocab())
+        vocab_size = len(tokenizer.get_vocab())  # can be checked with tokenizer.get_added_vocab()
         min_token_idx = min(token_idxs)
         indices = torch.tensor([i for i in range(vocab_size) if i < min_token_idx], device="cuda", dtype=torch.long)
 

@@ -102,23 +102,14 @@ class Coercion:
                 i = i + 1
                 if ('target' + str(i)) not in entry.keys():
                     break
-                print('target ' + str(i) + ': ' + entry["target" + str(i)] + " , " + str(entry["target" + str(i) + "_idx"]))
-            print('query: ' + entry["query"] + " , " + str(entry["query_idx"]))
+                print(f'target {i}: {entry["target" + str(i)]}, {entry["target" + str(i) + "_idx"]}')
+            print(f'query: {entry["query"]}, {entry["query_idx"]}')
 
-            # Model output
-            # TODO: https://huggingface.co/docs/transformers/v4.34.1/en/main_classes/pipelines#transformers.FillMaskPipeline
-            #  Works only with one target!
-            #nlp = FillMaskPipeline(model, self.builder.tokenizer, device=0)
-            #output = nlp(entry["query"])
-            #output = self._format(output)
-            #print('<mask> = ' + str(output))
-
-            # TODO new approach needed!
-            #input_ids = self.builder.encode(entry["query"])[0].to('cuda')
-            #with torch.no_grad():
-            #    outputs = model.generate(input_ids, max_length=100, num_return_sequences=15, num_beams=20)
-            #    outputs = [tokenizer.decode(output, skip_special_tokens=True) for output in outputs]
-            #print('<mask> = ' + str(outputs))  # TODO Just show the replaced <mask> token
+            nlp = Text2TextGenerationPipeline(model=model, tokenizer=self.builder.tokenizer, device=0)
+            output = nlp(entry["query"], max_length=30, num_return_sequences=5, num_beams=100)
+            output = self._format(output)
+            print(f"output: {output}")
+            # print('<mask> = ' + str(outputs))  # TODO Just show the replaced <mask> token
 
             for j in range(1, i):
                 vec_targets.append(
@@ -126,7 +117,7 @@ class Coercion:
                 )
 
             new_query = entry["query"].split()
-            new_query[entry["query_idx"]] = NEW_TOKEN  # TODO IndexError weil die Indizes noch nicht adjusted sind (done, muss noch getestet werden)
+            new_query[entry["query_idx"]] = NEW_TOKEN
             new_query = ' '.join(new_query)
             query = (new_query, entry["query_idx"])
             print(query)
@@ -146,28 +137,29 @@ class Coercion:
             nn.init.normal_(weight, mean=0.0, std=model.config.init_std)
 
             # Before training
-            print('Before training:')
+            # print('Before training:')
             # We need a Text2TextGeneration here, because mBart is created for translation, originally.
             # Only this way, there can be multiple predicted words for one <mask>.
-            nlp = Text2TextGenerationPipeline(model=model, tokenizer=self.builder.tokenizer, device=0)
+            # nlp = Text2TextGenerationPipeline(model=model, tokenizer=self.builder.tokenizer, device=0)
 
             model = self._train(model, vec_targets, queries)
 
             print("*************************************************************************")
             # After training
             print('After training:')
+            # TODO Vergleich mit nlp oben
             nlp = Text2TextGenerationPipeline(model=model, tokenizer=self.builder.tokenizer, device=0)
             for new_query in set(new_queries):  # only view different queries
-                print("query: " + new_query)
-                output = nlp(new_query)
+                print(f"query: {new_query}")
+                output = nlp(new_query, max_length=30, num_return_sequences=5, num_beams=100)  # TODO output is fishy...
                 output = self._format(output)
-                print('<mask> = ' + str(output))
+                print(f'output: {output}')
 
                 outputs_list.append(output)
 
                 output = self._predict_z(model, query)
                 output = self._format(output)
-                print(NEW_TOKEN + ' ' + str(output))
+                print(f'{NEW_TOKEN} {output}')
             print("*************************************************************************")
 
     def _train(self, model, vec_targets, queries):
@@ -195,21 +187,26 @@ class Coercion:
         target_idxs = torch.tensor(target_idxs, device="cuda").unsqueeze(-1)
         # token_idx is the index of target word in the vocabulary of BERT
         token_idxs = input_ids.gather(dim=-1, index=target_idxs)
-        vocab_size = len(tokenizer.get_vocab())
+        vocab_size = len(tokenizer.get_vocab())  # can be checked with tokenizer.get_added_vocab()
         min_token_idx = min(token_idxs)
         # Get all indices smaller than the new token_idx:
         indices = torch.tensor([i for i in range(vocab_size) if i < min_token_idx], device="cuda", dtype=torch.long)
 
+        # TODO Vergleiche Backpropagation!
         for _ in trange(epoch):
-            optimizer.zero_grad()
-            outputs = model(input_ids)
-            z = torch.index_select(outputs.encoder_last_hidden_state[0], dim=0, index=target_idxs.squeeze(-1))
+            model.zero_grad()  # todo testen
+            outputs = model(input_ids, output_hidden_states=True)  # we don't need output_hidden_states=True here, because we use the last only
+            # z = torch.index_select(outputs.encoder_last_hidden_state[0], dim=0, index=target_idxs.squeeze(-1))
+            z = torch.index_select(outputs.decoder_hidden_states[12][0], dim=0, index=target_idxs.squeeze(-1))
 
             loss = loss_fct(z, torch.stack(vec_targets))
 
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            model.get_input_embeddings().weight.grad[indices] = 0
+            #model.get_input_embeddings().weight.grad.data[indices] = 0
+            model.model.shared.weight.grad[indices] = 0
+            #model.model.encoder.embed_positions.weight.data[indices] = 0
+            #model.model.encoder.embed_tokens.weight.grad[indices] = 0
             optimizer.step()
             scheduler.step()
 
@@ -256,11 +253,18 @@ class Coercion:
     def _format(self, results):  # new format
 
         reval = []
+        # TODO item enthält nur 'generated_text' als Key - mit Decoder plötzlich nicht mehr??
         for item in results:
-            token_str = item['token_str']
-            score = item['score']
-            s = ':'.join([token_str, str(score)])
-            reval.append(s)
+            if "generated_text" in item.keys():
+                # Lands here at the beginning:
+                generated_text = item["generated_text"]
+                reval.append(generated_text)
+            else:
+                # Lands here after training:
+                token_str = item['token_str']
+                score = item['score']
+                s = ':'.join([token_str, str(score)])
+                reval.append(s)
         return reval
 
     def _predict_z(self, model, query):

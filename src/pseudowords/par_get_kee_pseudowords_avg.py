@@ -6,7 +6,8 @@ import itertools
 from typing import List, Tuple, TextIO
 import argparse
 
-from transformers import AutoTokenizer, MBart50Tokenizer, MBartForConditionalGeneration, Text2TextGenerationPipeline
+from transformers import AutoTokenizer, MBart50Tokenizer, MBartForConditionalGeneration, Text2TextGenerationPipeline, \
+    MBartTokenizer
 from transformers import get_linear_schedule_with_warmup
 from transformers import AdamW
 import torch
@@ -371,7 +372,7 @@ if __name__ == '__main__':
     data.sort(key=lambda x: x["label"])  # Grouping doesn't work without sorting first!
     data = [list(group) for _, group in itertools.groupby(data, key=lambda x: x["label"])]
 
-    tokenizer = MBart50Tokenizer.from_pretrained("facebook/mbart-large-cc25", src_lang="de_DE", tgt_lang="de_DE")
+    tokenizer = MBartTokenizer.from_pretrained("facebook/mbart-large-cc25", src_lang="de_DE", tgt_lang="de_DE")
     builder = DataBuilder(tokenizer)
     co = Coercion(builder)
     co.coercion(data[args.task_id])

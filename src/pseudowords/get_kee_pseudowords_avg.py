@@ -194,7 +194,7 @@ class Coercion:
 
         # TODO Vergleiche Backpropagation!
         for _ in trange(epoch):
-            model.zero_grad()  # todo testen
+            optimizer.zero_grad()  # todo testen
             outputs = model(input_ids, output_hidden_states=True)  # we don't need output_hidden_states=True here, because we use the last only
             # z = torch.index_select(outputs.encoder_last_hidden_state[0], dim=0, index=target_idxs.squeeze(-1))
             z = torch.index_select(outputs.decoder_hidden_states[12][0], dim=0, index=target_idxs.squeeze(-1))
@@ -204,9 +204,9 @@ class Coercion:
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             #model.get_input_embeddings().weight.grad.data[indices] = 0
-            model.model.shared.weight.grad[indices] = 0
             #model.model.encoder.embed_positions.weight.data[indices] = 0
             #model.model.encoder.embed_tokens.weight.grad[indices] = 0
+            model.model.shared.weight.grad[indices] = 0
             optimizer.step()
             scheduler.step()
 
@@ -244,9 +244,12 @@ class Coercion:
     def _freeze(self, model):
         # Freeze all the parameters except the word embeddings
         for name, param in model.named_parameters():
-            param.requires_grad = False
-            if name == 'model.shared.weight':
+            if 'model.encoder.embed_positions' in name or 'model.decoder.embed_positions' in name:
                 param.requires_grad = True
+            elif 'model.shared' in name:
+                param.requires_grad = True
+            else:
+                param.requires_grad = False
 
         return model
 
@@ -256,11 +259,9 @@ class Coercion:
         # TODO item enthält nur 'generated_text' als Key - mit Decoder plötzlich nicht mehr??
         for item in results:
             if "generated_text" in item.keys():
-                # Lands here at the beginning:
                 generated_text = item["generated_text"]
                 reval.append(generated_text)
             else:
-                # Lands here after training:
                 token_str = item['token_str']
                 score = item['score']
                 s = ':'.join([token_str, str(score)])
@@ -374,7 +375,7 @@ if __name__ == '__main__':
         co.coercion(group)
         print('==' * 40)
 
-result = get_lowest_loss_arrays(z_list, loss_list)
+    result = get_lowest_loss_arrays(z_list, loss_list)
 
-# save the pseudowords
-np.save(DIR_OUT + 'pseudowords_comapp.npy', result)
+    # save the pseudowords
+    np.save(DIR_OUT + 'pseudowords_comapp.npy', result)

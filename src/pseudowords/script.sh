@@ -8,7 +8,6 @@
 #SBATCH --output=/home/s/sockel/Desktop/llm-x-cxg/out/slurm.%j.%N.out
 #SBATCH --nodes=15  # Set the number of nodes
 #SBATCH --ntasks-per-node=1  # Set the number of tasks per node
-#SBATCH --gres=gpu:1  # Request 1 GPU per task
 
 # Load necessary modules and activate your virtual environment if needed
 module load python

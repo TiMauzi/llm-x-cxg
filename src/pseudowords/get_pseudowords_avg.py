@@ -30,7 +30,7 @@ Item = Tuple[str, int]
 Example = Tuple[Item, Item]
 
 # ARGS
-QUERIES_PATH = "./MaPP_all.txt"  # path to queries
+QUERIES_PATH = "../../data/pseudowords/MaPP_all.txt"  # path to queries
 DIR_OUT = "../../out/"  # path to dir to save the pseudowords
 CACHE = "../../out/cache/"  # path to cach directory
 
@@ -346,7 +346,7 @@ if __name__ == '__main__':
     with open(QUERIES_PATH) as json_file:
         data = json.load(json_file)
     # Read the columns "query" and "label" from "./data/MaPP_Dataset.csv" and save them as a dictionary:
-    with open("./MaPP_Dataset.csv") as csv_file:
+    with open("../../data/pseudowords/MaPP_Dataset.csv") as csv_file:
         csv_reader = csv.reader(csv_file, delimiter=',')
         labels = {row[0]: row[2] + row[5] for row in csv_reader}
     # Add labels to data:

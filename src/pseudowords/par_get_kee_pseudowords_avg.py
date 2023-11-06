@@ -31,7 +31,7 @@ Example = Tuple[Item, Item]
 
 # ARGS
 QUERIES_PATH = "../../out/CoMaPP_all.json"  # path to queries
-DATASET_PATH = "CoMaPP_Dataset.csv"
+DATASET_PATH = "../../data/pseudowords/CoMapp_Dataset.csv"
 DIR_OUT = "../../out/"  # path to dir to save the pseudowords
 CACHE = "../../out/cache/"  # path to cach directory
 
@@ -168,7 +168,7 @@ class Coercion:
         loss_fct = nn.MSELoss(reduction='mean')  # mean will be computed later
         optimizer = torch.optim.AdamW(model.parameters(), lr=0.03, # lr=0.3
                                       eps=1e-8)
-        epoch = 20  # 1000
+        epoch = 1  # 1000
         scheduler = get_linear_schedule_with_warmup(
             optimizer,
             num_warmup_steps=0,

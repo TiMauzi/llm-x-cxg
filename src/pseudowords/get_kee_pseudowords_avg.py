@@ -30,7 +30,7 @@ Example = Tuple[Item, Item]
 
 # ARGS
 QUERIES_PATH = "../../out/CoMaPP_all.json"  # path to queries
-DATASET_PATH = "CoMaPP_Dataset.csv"
+DATASET_PATH = "../../data/pseudowords/CoMapp_Dataset.csv"
 DIR_OUT = "../../out/"  # path to dir to save the pseudowords
 CACHE = "../../out/cache/"  # path to cach directory
 
@@ -94,6 +94,7 @@ class Coercion:
 
         new_queries = []
         queries = []
+        targets1 = []
         vec_targets = []
 
         # Print targets (and their id's) and the query (and its id)
@@ -124,6 +125,7 @@ class Coercion:
             print(query)
             new_queries.append(new_query)
             queries.append(query)
+            targets1.append((entry["target1"], entry["target1_idx"]))
 
         model = self._freeze(model)
 
@@ -134,7 +136,7 @@ class Coercion:
             print('Random {a}'.format(a=i))
 
             # Random initialization, same initialization as huggingface
-            weight = model.get_input_embeddings().weight.data[-1]
+            weight = model.model.shared.weight.data[-1]
             nn.init.normal_(weight, mean=0.0, std=model.config.init_std)
 
             # Before training
@@ -143,7 +145,7 @@ class Coercion:
             # Only this way, there can be multiple predicted words for one <mask>.
             # nlp = Text2TextGenerationPipeline(model=model, tokenizer=self.builder.tokenizer, device=0)
 
-            model = self._train(model, vec_targets, queries)
+            model = self._train(model, vec_targets, queries, targets1)
 
             print("*************************************************************************")
             # After training
@@ -152,6 +154,7 @@ class Coercion:
             nlp = Text2TextGenerationPipeline(model=model, tokenizer=self.builder.tokenizer, device=0)
             for new_query in set(new_queries):  # only view different queries
                 print(f"query: {new_query}")
+                # TODO schauen was für tokens generiert werden - was passiert mit #TOKEN#
                 output = nlp(new_query, max_length=30, num_return_sequences=5, num_beams=100)  # TODO output is fishy...
                 output = self._format(output)
                 print(f'output: {output}')
@@ -160,10 +163,10 @@ class Coercion:
 
                 output = self._predict_z(model, query)
                 output = self._format(output)
-                print(f'{NEW_TOKEN} {output}')
+                print(f'{NEW_TOKEN} {output}')  # TODO Generiert vor allem <s>
             print("*************************************************************************")
 
-    def _train(self, model, vec_targets, queries):
+    def _train(self, model, vec_targets, queries, targets1):
         loss_fct = nn.MSELoss(reduction='mean')  # mean will be computed later
         optimizer = torch.optim.AdamW(model.parameters(), lr=0.3, eps=1e-8)
         epoch = 10 # todo 1000
@@ -178,17 +181,26 @@ class Coercion:
         #  (c) count the input_ids (.shape[-1], because the number of input_ids is stored in the second/last dimension).
         # Then, you can take the max to know how much you should pad the rest.
         max_length = max([(self.builder.encode(query[0])[0]).shape[-1] for query in queries])
+        max_labels_length = max([(self.builder.encode(target1[0])[0]).shape[-1] for target1 in targets1])
 
         input_ids_and_gather_indexes = [self.builder.encode(query[0], max_length=max_length) for query in queries]
         input_ids = torch.cat([input_id for input_id in [i for i, _ in input_ids_and_gather_indexes]], dim=0).to("cuda")
         gather_indexes = [gather_index for gather_index in [g for _, g in input_ids_and_gather_indexes]]
+
+        # This is needed for computing the loss. This is because mBart is a generative model unlike Bert, so
+        # the decoder needs the solution during training time. It also needs to be shifted right
+        # (happens automatically here).
+        # [0] because I don't need "gather_indexes"
+        labels = [self.builder.encode(target1[0], max_length=max_labels_length)[0] for target1 in targets1]
+        labels = torch.cat([label for label in [lab for lab in labels]], dim=0).to("cuda")
+
 
         # target_idx is the index of target word in the token list.
         target_idxs = [g[q[1] + 1][0] for g, q in zip(gather_indexes, queries)]
         target_idxs = torch.tensor(target_idxs, device="cuda").unsqueeze(-1)
         # token_idx is the index of target word in the vocabulary of BERT
         token_idxs = input_ids.gather(dim=-1, index=target_idxs)
-        vocab_size = len(tokenizer.get_vocab())  # can be checked with tokenizer.get_added_vocab()
+        vocab_size = len(tokenizer)  # can be checked with tokenizer.get_added_vocab()
         min_token_idx = min(token_idxs)
         # Get all indices smaller than the new token_idx:
         indices = torch.tensor([i for i in range(vocab_size) if i < min_token_idx], device="cuda", dtype=torch.long)
@@ -197,8 +209,10 @@ class Coercion:
         for _ in trange(epoch):
             optimizer.zero_grad()  # todo testen
             outputs = model(input_ids, output_hidden_states=True)  # we don't need output_hidden_states=True here, because we use the last only
+            # masked_lm_loss = loss_fct(outputs.logits.view(-1, model.config.vocab_size-1), labels.view(-1))  # loss needs to be calculated manually because of smaller vocab size
             # z = torch.index_select(outputs.encoder_last_hidden_state[0], dim=0, index=target_idxs.squeeze(-1))
-            z = torch.index_select(outputs.decoder_hidden_states[12][0], dim=0, index=target_idxs.squeeze(-1))
+            # z = torch.index_select(outputs.decoder_hidden_states[-1], dim=0, index=target_idxs.squeeze(-1))  # todo [0] nimmt nur erstes element?
+            z = torch.gather(outputs.decoder_hidden_states[-1], dim=1, index=target_idxs.unsqueeze(-1).expand(-1, -1, model.config.d_model)) # d_model == 1024
 
             loss = loss_fct(z, torch.stack(vec_targets))
 
@@ -207,7 +221,8 @@ class Coercion:
             #model.get_input_embeddings().weight.grad.data[indices] = 0
             #model.model.encoder.embed_positions.weight.data[indices] = 0
             #model.model.encoder.embed_tokens.weight.grad[indices] = 0
-            model.model.shared.weight.grad[indices] = 0
+            # model.model.shared.weight.grad[indices] = 0
+            model.model.decoder.embed_tokens.weight.grad[indices] = 0
             optimizer.step()
             scheduler.step()
 
@@ -237,22 +252,29 @@ class Coercion:
         with torch.no_grad():
             # Find the learning target x
             input_ids = input_ids.to('cuda')
-            outputs = model(input_ids)
-            # encoder relevant for downstream tasks
-            x_target = outputs.encoder_last_hidden_state[0, target_idx]
+            outputs = model(input_ids=input_ids, output_hidden_states=True)  # labels will be shifted right automatically
+            x_target = outputs.decoder_hidden_states[-1][:, target_idx]   # todo warum 0?  # warum ist decoder hidden state none?
         return x_target
 
     def _freeze(self, model):
         # Freeze all the parameters except the word embeddings
         for name, param in model.named_parameters():
-            if 'model.encoder.embed_positions' in name or 'model.decoder.embed_positions' in name:
-                param.requires_grad = True
-            elif 'model.shared' in name:
+            if 'model.shared' in name:
                 param.requires_grad = True
             else:
                 param.requires_grad = False
 
-        return model
+        # "decoder" in Bert projects from hidden to output. This is analogous to "lm_head" in mBART.
+        original_weight = model.lm_head.weight
+        original_bias = model.final_logits_bias
+        lm_head = nn.Linear(in_features=1024, out_features=len(tokenizer)-1, bias=False, device=0)  # this hinders the model from outputting #TOKEN#
+        lm_head.weight.requires_grad = False
+        model.register_buffer("final_logits_bias", torch.zeros((1, model.model.shared.num_embeddings-1)))
+        lm_head.weight.data.copy_(original_weight.data[:-1])
+        model.final_logits_bias.copy_(original_bias[:, :-1])
+        model.lm_head = lm_head
+
+        return model.to(model.device)
 
     def _format(self, results):  # new format
 

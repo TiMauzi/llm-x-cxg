@@ -29,7 +29,7 @@ Item = Tuple[str, int]
 Example = Tuple[Item, Item]
 
 # ARGS
-QUERIES_PATH = "../../out/CoMaPP_all.json"  # path to queries
+QUERIES_PATH = "../../data/pseudowords/CoMaPP_all.json"  # path to queries
 DATASET_PATH = "../../data/pseudowords/CoMapp_Dataset.csv"
 DIR_OUT = "../../out/"  # path to dir to save the pseudowords
 CACHE = "../../out/cache/"  # path to cach directory
@@ -86,7 +86,8 @@ class Coercion:
     def coercion(self,
                  group,
                  k: int = 5):
-        model = MBartForConditionalGeneration.from_pretrained("facebook/mbart-large-50", return_dict=True)
+        model = MBartForConditionalGeneration.from_pretrained("facebook/mbart-large-50",
+                                                              return_dict=True)  #, decoder_start_token_id=250003)  # 250003 == de_DE
         model.to('cuda')
 
         self.builder.tokenizer.add_tokens(NEW_TOKEN)
@@ -150,26 +151,32 @@ class Coercion:
             print("*************************************************************************")
             # After training
             print('After training:')
-            # TODO Vergleich mit nlp oben
             nlp = Text2TextGenerationPipeline(model=model, tokenizer=self.builder.tokenizer, device=0)
+
+            # For determining the original token's length, you take a random (the first) target, whitespace-tokenize it
+            # and extract the token string. Then you tokenize it using the tokenizer. You can then count the input_ids,
+            # ignoring the first id and the final id.
+            token_length = len(tokenizer(targets1[0][0].split()[targets1[0][1]])["input_ids"][1:-1])
             for new_query in set(new_queries):  # only view different queries
                 print(f"query: {new_query}")
-                # TODO schauen was für tokens generiert werden - was passiert mit #TOKEN#
-                output = nlp(new_query, max_length=30, num_return_sequences=5, num_beams=100)  # TODO output is fishy...
+
+                target_length = len(new_query) - 1 + token_length  # length of new query - #TOKEN# + target token
+                output = nlp(new_query, max_length=target_length, num_return_sequences=5, num_beams=100)  # TODO output is fishy...
                 output = self._format(output)
                 print(f'output: {output}')
 
                 outputs_list.append(output)
 
-                output = self._predict_z(model, query)
+                #predictions = tokenizer(output, return_tensors="pt").input_ids
+                output = self._predict_z(model, query, output)  # todo predictions testen
                 output = self._format(output)
-                print(f'{NEW_TOKEN} {output}')  # TODO Generiert vor allem <s>
+                print(f'{NEW_TOKEN} {output}')
             print("*************************************************************************")
 
     def _train(self, model, vec_targets, queries, targets1):
         loss_fct = nn.MSELoss(reduction='mean')  # mean will be computed later
-        optimizer = torch.optim.AdamW(model.parameters(), lr=0.3, eps=1e-8)
-        epoch = 10 # todo 1000
+        optimizer = torch.optim.AdamW(model.parameters(), lr=0.03, eps=1e-8)
+        epoch = 10  # 1000 was the default for BERT; but 400 seems to be enough to practically minimize the loss
         scheduler = get_linear_schedule_with_warmup(
             optimizer,
             num_warmup_steps=0,
@@ -185,50 +192,52 @@ class Coercion:
 
         input_ids_and_gather_indexes = [self.builder.encode(query[0], max_length=max_length) for query in queries]
         input_ids = torch.cat([input_id for input_id in [i for i, _ in input_ids_and_gather_indexes]], dim=0).to("cuda")
-        gather_indexes = [gather_index for gather_index in [g for _, g in input_ids_and_gather_indexes]]
+        # We actually don't need the index tuples here, because the real indices are stored within the labels:
+        # gather_indexes = [gather_index for gather_index in [g for _, g in input_ids_and_gather_indexes]]
 
         # This is needed for computing the loss. This is because mBart is a generative model unlike Bert, so
         # the decoder needs the solution during training time. It also needs to be shifted right
         # (happens automatically here).
         # [0] because I don't need "gather_indexes"
-        labels = [self.builder.encode(target1[0], max_length=max_labels_length)[0] for target1 in targets1]
-        labels = torch.cat([label for label in [lab for lab in labels]], dim=0).to("cuda")
-
+        labels_and_gather_indexes = [self.builder.encode(target1[0], max_length=max_labels_length) for target1 in targets1]
+        labels = torch.cat([label for label in [lab for lab, _ in labels_and_gather_indexes]], dim=0).to("cuda")
+        gather_indexes = [gather_index for gather_index in [g for _, g in labels_and_gather_indexes]]
 
         # target_idx is the index of target word in the token list.
-        target_idxs = [g[q[1] + 1][0] for g, q in zip(gather_indexes, queries)]
-        target_idxs = torch.tensor(target_idxs, device="cuda").unsqueeze(-1)
+        # TODO Statt g[q[1] + 1][0]: Suche alle Indizes, die zu #TOKEN# werden sollen. -> Statt (8, 1) sollte es z. B. (8, 3) sein
+        target_idxs = [g[q[1] + 1] for g, q in zip(gather_indexes, queries)]
+        # target_idxs = torch.tensor(target_idxs, device="cuda").unsqueeze(-1)
+        target_idxs = torch.tensor([range(*i) for i in target_idxs], device="cuda")
+
         # token_idx is the index of target word in the vocabulary of BERT
-        token_idxs = input_ids.gather(dim=-1, index=target_idxs)
+        # token_idxs = input_ids.gather(dim=-1, index=target_idxs)
+        token_idxs = input_ids.gather(dim=-1, index=target_idxs[:, 0].unsqueeze(-1))
         vocab_size = len(tokenizer)  # can be checked with tokenizer.get_added_vocab()
         min_token_idx = min(token_idxs)
         # Get all indices smaller than the new token_idx:
         indices = torch.tensor([i for i in range(vocab_size) if i < min_token_idx], device="cuda", dtype=torch.long)
 
-        # TODO Vergleiche Backpropagation!
         for _ in trange(epoch):
-            optimizer.zero_grad()  # todo testen
-            outputs = model(input_ids, output_hidden_states=True)  # we don't need output_hidden_states=True here, because we use the last only
-            # masked_lm_loss = loss_fct(outputs.logits.view(-1, model.config.vocab_size-1), labels.view(-1))  # loss needs to be calculated manually because of smaller vocab size
-            # z = torch.index_select(outputs.encoder_last_hidden_state[0], dim=0, index=target_idxs.squeeze(-1))
-            # z = torch.index_select(outputs.decoder_hidden_states[-1], dim=0, index=target_idxs.squeeze(-1))  # todo [0] nimmt nur erstes element?
-            z = torch.gather(outputs.decoder_hidden_states[-1], dim=1, index=target_idxs.unsqueeze(-1).expand(-1, -1, model.config.d_model)) # d_model == 1024
+            optimizer.zero_grad()
+            outputs = model(input_ids, output_hidden_states=True, labels=labels)
+            # loss for generation needs to be calculated manually because of smaller vocab size:
+            # masked_lm_loss = loss_fct(outputs.logits.view(-1, model.config.vocab_size-1), labels.view(-1))
+            z = torch.gather(outputs.decoder_hidden_states[-1], dim=1,
+                             index=target_idxs.unsqueeze(-1).expand(-1, -1, model.config.d_model)) # d_model == 1024
+            # todo outputs.decoder_hidden_states[-1][:, slice(*target_idx)]
 
-            loss = loss_fct(z, torch.stack(vec_targets))
+            loss = loss_fct(z, torch.stack(vec_targets).squeeze())
+            print(f"\ttrain loss = {float(loss)}")
 
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            #model.get_input_embeddings().weight.grad.data[indices] = 0
-            #model.model.encoder.embed_positions.weight.data[indices] = 0
-            #model.model.encoder.embed_tokens.weight.grad[indices] = 0
-            # model.model.shared.weight.grad[indices] = 0
-            model.model.decoder.embed_tokens.weight.grad[indices] = 0
+            model.model.encoder.embed_tokens.weight.grad[indices] = 0
             optimizer.step()
             scheduler.step()
 
             # try to fix the feed-forward bug
-            outputs = model(input_ids)
-            bert_z = torch.index_select(outputs.encoder_last_hidden_state[0], dim=0, index=target_idxs.squeeze(-1))
+            # outputs = model(input_ids)
+            # bert_z = torch.index_select(outputs.encoder_last_hidden_state[0], dim=0, index=target_idxs.squeeze(-1))
 
         # get the z* for classification
         vec = model.get_input_embeddings()(token_idxs).squeeze(1)[0]  # this is z*; [0] because all the same
@@ -240,20 +249,21 @@ class Coercion:
         np.save(CACHE + "temp_z_arrays_mbart.npy", np.array(z_list))
         np.save(CACHE + "temp_loss_arrays_mbart.npy", np.array(loss_list))
 
-        s = 'Final loss={a}'.format(a=str(loss.cpu().detach().numpy()))
+        s = 'Final loss = {a}'.format(a=str(loss.cpu().detach().numpy()))
         print(s)
 
         return model
 
     def _get_target_embed(self, target, model):
         input_ids, gather_indexes = self.builder.encode(target[0])
-        target_idx = gather_indexes[target[1] + 1][0]
+        target_idx = gather_indexes[target[1] + 1]
         model.eval()
         with torch.no_grad():
             # Find the learning target x
             input_ids = input_ids.to('cuda')
-            outputs = model(input_ids=input_ids, output_hidden_states=True)  # labels will be shifted right automatically
-            x_target = outputs.decoder_hidden_states[-1][:, target_idx]   # todo warum 0?  # warum ist decoder hidden state none?
+            outputs = model(input_ids=input_ids, output_hidden_states=True)  # labels are shifted right automatically
+            # get all indices that are part of the KEE; slice is needed for converting the tuple to a slice
+            x_target = outputs.decoder_hidden_states[-1][:, slice(*target_idx)]
         return x_target
 
     def _freeze(self, model):
@@ -264,22 +274,33 @@ class Coercion:
             else:
                 param.requires_grad = False
 
-        # "decoder" in Bert projects from hidden to output. This is analogous to "lm_head" in mBART.
+        # The "decoder" in BERT maps from hidden to output. This is analogous to "lm_head" in mBART.
         original_weight = model.lm_head.weight
         original_bias = model.final_logits_bias
-        lm_head = nn.Linear(in_features=1024, out_features=len(tokenizer)-1, bias=False, device=0)  # this hinders the model from outputting #TOKEN#
+        # The vocabulary of the decoder doesn't need #TOKEN# and would be too big:
+        original_decoder_embed_tokens_weight = model.model.decoder.embed_tokens.weight
+        # original_decoder_embed_tokens_bias = model.model.decoder.embed_tokens.bias
+
+        # The argument len(tokenizer)-1 should prevent the model from outputting #TOKEN#:
+        lm_head = nn.Linear(in_features=1024, out_features=len(tokenizer)-1, bias=False)
         lm_head.weight.requires_grad = False
         model.register_buffer("final_logits_bias", torch.zeros((1, model.model.shared.num_embeddings-1)))
         lm_head.weight.data.copy_(original_weight.data[:-1])
         model.final_logits_bias.copy_(original_bias[:, :-1])
         model.lm_head = lm_head
+        decoder_embed_tokens = nn.Embedding(len(tokenizer)-1, model.config.d_model, model.config.pad_token_id)
+        # For decoder, see above:
+        decoder_embed_tokens.weight.data.copy_(original_decoder_embed_tokens_weight.data[:-1])
+        # decoder_embed_tokens.bias.data.copy_(original_decoder_embed_tokens_bias.data[:, :-1])
+        decoder_embed_tokens.requires_grad_(False)
+        model.model.decoder.embed_tokens = decoder_embed_tokens
+        model.config.vocab_size -= 1
 
         return model.to(model.device)
 
     def _format(self, results):  # new format
 
         reval = []
-        # TODO item enthält nur 'generated_text' als Key - mit Decoder plötzlich nicht mehr??
         for item in results:
             if "generated_text" in item.keys():
                 generated_text = item["generated_text"]
@@ -291,21 +312,30 @@ class Coercion:
                 reval.append(s)
         return reval
 
-    def _predict_z(self, model, query):
-        input_ids, gather_indexes = self.builder.encode(query[0])
-        # target_idx is the index of target word in the token list.
-        target_idx = gather_indexes[query[1] + 1][0]
+    def _predict_z(self, model, query, predictions):
+        max_length = max([self.builder.encode(pred)[0].size(-1) for pred in predictions])
+
+        input_ids, _ = self.builder.encode(query[0])
+
+        pred_and_gather_indexes = [self.builder.encode(pred, max_length=max_length) for pred in predictions]
+        prediction_ids = torch.stack([i for i, _ in pred_and_gather_indexes])
+
         input_ids = input_ids.to('cuda')
-        outputs = model(input_ids)
+        prediction_ids = prediction_ids.to('cuda')
         with torch.no_grad():
-            logits = outputs.logits[0, target_idx, :]
-        probs = logits.softmax(dim=0)
-        values, predictions = probs.topk(5)
+            logits = [model(input_ids, labels=prediction.to("cuda")).logits[0, :, :] for prediction in prediction_ids]  # todo predicitions müssen mit rein!
+            logits = torch.stack(logits, dim=0)
+            # Use torch.gather to select values from probabilities based on prediction_ids
+            selected_logits = torch.gather(logits, 2, prediction_ids)
+            logits_sum = selected_logits.sum(dim=1, keepdim=True)
+
+        probs = logits_sum.softmax(dim=-1)
+        # values, output = probs.topk(5, dim=-1)
         reval = []
-        for v, p in zip(values.tolist(), predictions.tolist()):
+        for prob, pred in zip(probs.tolist(), predictions):
             s = {
-                'score': v,
-                'token_str': self.builder.tokenizer.convert_ids_to_tokens(p)
+                'score': prob,
+                'prediction': pred  # self.builder.tokenizer.convert_ids_to_tokens(p)
             }
             reval.append(s)
         return reval
@@ -374,19 +404,6 @@ if __name__ == '__main__':
     with open(QUERIES_PATH) as json_file:
         data = json.load(json_file)
 
-    # This is not necessary anymore, since the correct labels are already created beforehand:
-    #
-    # Read the columns "query" and "label" from "./data/MaPP_Dataset.csv" and save them as a relation (set of tuples):
-    # with open(DATASET_PATH) as csv_file:
-    #     csv_reader = csv.reader(csv_file, delimiter=',')
-    #     labels = {(row[0], row[2] + row[3]) for row in csv_reader}
-    # # Add labels to data:
-    # for d in tqdm(data):
-    #     try:
-    #         d["label"] = [label for (query, label) in labels if query == d["target1"]]  # labels[d["target1"]]
-    #     except KeyError:
-    #         d["label"] = [label for (query, label) in labels if query == d["target1"].strip()]
-
     # Group the dataset into a list of lists where the label of the dictionaries is identical:
     data.sort(key=lambda x: x["label"])  # Grouping doesn't work without sorting first!
     data = [list(group) for _, group in itertools.groupby(data, key=lambda x: x["label"])]
@@ -397,6 +414,7 @@ if __name__ == '__main__':
     for group in data:
         co.coercion(group)
         print('==' * 40)
+        break  # TODO test
 
     result = get_lowest_loss_arrays(z_list, loss_list)
 

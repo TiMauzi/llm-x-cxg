@@ -161,22 +161,22 @@ class Coercion:
                 print(f"query: {new_query}")
 
                 target_length = len(new_query) - 1 + token_length  # length of new query - #TOKEN# + target token
-                output = nlp(new_query, max_length=target_length, num_return_sequences=5, num_beams=100)  # TODO output is fishy...
+                output = nlp(new_query, max_length=target_length, num_return_sequences=5, num_beams=100)
                 output = self._format(output)
                 print(f'output: {output}')
 
                 outputs_list.append(output)
 
                 #predictions = tokenizer(output, return_tensors="pt").input_ids
-                output = self._predict_z(model, query, output)  # todo predictions testen
+                output = self._predict_z(model, query, output)
                 output = self._format(output)
-                print(f'{NEW_TOKEN} {output}')
+                print(f'{NEW_TOKEN} generates:\t{output}')
             print("*************************************************************************")
 
     def _train(self, model, vec_targets, queries, targets1):
         loss_fct = nn.MSELoss(reduction='mean')  # mean will be computed later
         optimizer = torch.optim.AdamW(model.parameters(), lr=0.03, eps=1e-8)
-        epoch = 10  # 1000 was the default for BERT; but 400 seems to be enough to practically minimize the loss
+        epoch = 50  # 1000 was the default for BERT; but 400 seems to be enough to practically minimize the loss
         scheduler = get_linear_schedule_with_warmup(
             optimizer,
             num_warmup_steps=0,
@@ -204,7 +204,6 @@ class Coercion:
         gather_indexes = [gather_index for gather_index in [g for _, g in labels_and_gather_indexes]]
 
         # target_idx is the index of target word in the token list.
-        # TODO Statt g[q[1] + 1][0]: Suche alle Indizes, die zu #TOKEN# werden sollen. -> Statt (8, 1) sollte es z. B. (8, 3) sein
         target_idxs = [g[q[1] + 1] for g, q in zip(gather_indexes, queries)]
         # target_idxs = torch.tensor(target_idxs, device="cuda").unsqueeze(-1)
         target_idxs = torch.tensor([range(*i) for i in target_idxs], device="cuda")
@@ -222,9 +221,9 @@ class Coercion:
             outputs = model(input_ids, output_hidden_states=True, labels=labels)
             # loss for generation needs to be calculated manually because of smaller vocab size:
             # masked_lm_loss = loss_fct(outputs.logits.view(-1, model.config.vocab_size-1), labels.view(-1))
+
             z = torch.gather(outputs.decoder_hidden_states[-1], dim=1,
-                             index=target_idxs.unsqueeze(-1).expand(-1, -1, model.config.d_model)) # d_model == 1024
-            # todo outputs.decoder_hidden_states[-1][:, slice(*target_idx)]
+                             index=target_idxs.unsqueeze(-1).expand(-1, -1, model.config.d_model))  # d_model == 1024
 
             loss = loss_fct(z, torch.stack(vec_targets).squeeze())
             print(f"\ttrain loss = {float(loss)}")
@@ -306,7 +305,7 @@ class Coercion:
                 generated_text = item["generated_text"]
                 reval.append(generated_text)
             else:
-                token_str = item['token_str']
+                token_str = item['prediction']  # item['token_str']
                 score = item['score']
                 s = ':'.join([token_str, str(score)])
                 reval.append(s)
@@ -323,16 +322,18 @@ class Coercion:
         input_ids = input_ids.to('cuda')
         prediction_ids = prediction_ids.to('cuda')
         with torch.no_grad():
-            logits = [model(input_ids, labels=prediction.to("cuda")).logits[0, :, :] for prediction in prediction_ids]  # todo predicitions müssen mit rein!
+            logits = [model(input_ids, labels=prediction.to("cuda")).logits[0, :, :] for prediction in prediction_ids]
             logits = torch.stack(logits, dim=0)
             # Use torch.gather to select values from probabilities based on prediction_ids
-            selected_logits = torch.gather(logits, 2, prediction_ids)
-            logits_sum = selected_logits.sum(dim=1, keepdim=True)
+            # selected_logits = torch.gather(logits, -1, prediction_ids)
+            # logits_sum = selected_logits.sum(dim=-1, keepdim=True).squeeze(-1)
 
-        probs = logits_sum.softmax(dim=-1)
+        probs = logits.softmax(dim=-1)
+        selected_probs = torch.gather(probs, -1, prediction_ids)
+        probs_prod = selected_probs.prod(dim=-1, keepdim=True).squeeze()
         # values, output = probs.topk(5, dim=-1)
         reval = []
-        for prob, pred in zip(probs.tolist(), predictions):
+        for prob, pred in zip(probs_prod.tolist(), predictions):
             s = {
                 'score': prob,
                 'prediction': pred  # self.builder.tokenizer.convert_ids_to_tokens(p)

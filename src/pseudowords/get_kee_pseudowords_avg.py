@@ -3,6 +3,8 @@ Bert Coercion
 """
 import csv
 import itertools
+import random
+import sys
 from typing import List, Tuple, TextIO
 
 from transformers import AutoTokenizer, MBart50Tokenizer, MBartForConditionalGeneration, Text2TextGenerationPipeline, \
@@ -12,6 +14,7 @@ from transformers import AdamW
 import torch
 import torch.nn as nn
 import torch.optim
+import torch.utils.data
 from tqdm import trange, tqdm
 import jsonlines
 import json
@@ -33,6 +36,21 @@ QUERIES_PATH = "../../data/pseudowords/CoMaPP_all.json"  # path to queries
 DATASET_PATH = "../../data/pseudowords/CoMapp_Dataset.csv"
 DIR_OUT = "../../out/"  # path to dir to save the pseudowords
 CACHE = "../../out/cache/"  # path to cach directory
+
+# Helpers:
+
+def setup_seed(seed: int, strict: bool = True):
+    torch.manual_seed(seed)
+    random.seed(seed)
+    np.random.seed(min(seed, 2 ** 32 - 1))
+    if strict:
+        setup_reproducible()
+
+
+def setup_reproducible():
+    torch.backends.cudnn.benchmark = False  # makes faster
+    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"  # "A handful of CUDA operations are nondeterministic if the CUDA version is 10.2 or greater, unless the environment variable CUBLAS_WORKSPACE_CONFIG=:4096:8 or CUBLAS_WORKSPACE_CONFIG=:16:8 is set." (https://pytorch.org/docs/stable/generated/torch.use_deterministic_algorithms.html)
+    torch.use_deterministic_algorithms(True)
 
 
 ################################################
@@ -80,15 +98,17 @@ class DataBuilder:
 
 
 class Coercion:
-    def __init__(self, builder: DataBuilder):
+    def __init__(self, builder: DataBuilder, batch_size: int = 8):
         self.builder = builder
+        self.batch_size = batch_size
 
     def coercion(self,
                  group,
-                 k: int = 5):
+                 k: int = 5,
+                 batch_size = 8):
         model = MBartForConditionalGeneration.from_pretrained("facebook/mbart-large-50",
                                                               return_dict=True)  #, decoder_start_token_id=250003)  # 250003 == de_DE
-        model.to('cuda')
+        model.to('cuda:1')
 
         self.builder.tokenizer.add_tokens(NEW_TOKEN)
         model.resize_token_embeddings(len(self.builder.tokenizer))
@@ -99,6 +119,7 @@ class Coercion:
         vec_targets = []
 
         # Print targets (and their id's) and the query (and its id)
+        # TODO Caching
         for entry in group:
             i = 0
             while True:
@@ -108,7 +129,8 @@ class Coercion:
                 print(f'target {i}: {entry["target" + str(i)]}, {entry["target" + str(i) + "_idx"]}')
             print(f'query: {entry["query"]}, {entry["query_idx"]}')
 
-            nlp = Text2TextGenerationPipeline(model=model, tokenizer=self.builder.tokenizer, device=0)
+            # todo auch ändern, s. u.
+            nlp = Text2TextGenerationPipeline(model=model, tokenizer=self.builder.tokenizer, device=1)
             output = nlp(entry["query"], max_length=30, num_return_sequences=5, num_beams=100)
             output = self._format(output)
             print(f"output: {output}")
@@ -144,14 +166,14 @@ class Coercion:
             # print('Before training:')
             # We need a Text2TextGeneration here, because mBart is created for translation, originally.
             # Only this way, there can be multiple predicted words for one <mask>.
-            # nlp = Text2TextGenerationPipeline(model=model, tokenizer=self.builder.tokenizer, device=0)
+            # nlp = Text2TextGenerationPipeline(model=model, tokenizer=self.builder.tokenizer, device=1)
 
             model = self._train(model, vec_targets, queries, targets1)
 
             print("*************************************************************************")
             # After training
             print('After training:')
-            nlp = Text2TextGenerationPipeline(model=model, tokenizer=self.builder.tokenizer, device=0)
+            nlp = Text2TextGenerationPipeline(model=model, tokenizer=self.builder.tokenizer, device=1)
 
             # For determining the original token's length, you take a random (the first) target, whitespace-tokenize it
             # and extract the token string. Then you tokenize it using the tokenizer. You can then count the input_ids,
@@ -161,22 +183,30 @@ class Coercion:
                 print(f"query: {new_query}")
 
                 target_length = len(new_query) - 1 + token_length  # length of new query - #TOKEN# + target token
-                output = nlp(new_query, max_length=target_length, num_return_sequences=5, num_beams=100)
-                output = self._format(output)
-                print(f'output: {output}')
+                #output = nlp(new_query, max_length=target_length, num_return_sequences=5, num_beams=100)
+                #output = self._format(output)
+                #print(f'output: {output}')
 
-                outputs_list.append(output)
+                outputs = tokenizer(new_query, return_tensors="pt").to(model.device)
+                outputs = model.generate(outputs["input_ids"], max_length=target_length, num_return_sequences=5, num_beams=100, output_scores=True, return_dict_in_generate=True)
+
+                scores = torch.stack(outputs.scores)
+                # TODO Finde den score, der jeweils zu den 5 Outputs gehört
+
+                print([f'output: {output}, score: {score}' for output, score in zip(outputs, scores)])
+
+                outputs_list.append(outputs)
 
                 #predictions = tokenizer(output, return_tensors="pt").input_ids
-                output = self._predict_z(model, query, output)
-                output = self._format(output)
-                print(f'{NEW_TOKEN} generates:\t{output}')
+                #output = self._predict_z(model, query, output)
+                #output = self._format(output)
+                #print(f'{NEW_TOKEN} generates:\t{output}')
             print("*************************************************************************")
 
     def _train(self, model, vec_targets, queries, targets1):
         loss_fct = nn.MSELoss(reduction='mean')  # mean will be computed later
-        optimizer = torch.optim.AdamW(model.parameters(), lr=0.03, eps=1e-8)
-        epoch = 50  # 1000 was the default for BERT; but 400 seems to be enough to practically minimize the loss
+        optimizer = torch.optim.AdamW(model.parameters(), lr=0.003, eps=1e-8)
+        epoch = 1000  # 1000 was the default for BERT; but 400 seems to be enough to practically minimize the loss
         scheduler = get_linear_schedule_with_warmup(
             optimizer,
             num_warmup_steps=0,
@@ -191,7 +221,7 @@ class Coercion:
         max_labels_length = max([(self.builder.encode(target1[0])[0]).shape[-1] for target1 in targets1])
 
         input_ids_and_gather_indexes = [self.builder.encode(query[0], max_length=max_length) for query in queries]
-        input_ids = torch.cat([input_id for input_id in [i for i, _ in input_ids_and_gather_indexes]], dim=0).to("cuda")
+        input_ids = torch.cat([input_id for input_id in [i for i, _ in input_ids_and_gather_indexes]], dim=0).to("cuda:1")
         # We actually don't need the index tuples here, because the real indices are stored within the labels:
         # gather_indexes = [gather_index for gather_index in [g for _, g in input_ids_and_gather_indexes]]
 
@@ -200,13 +230,13 @@ class Coercion:
         # (happens automatically here).
         # [0] because I don't need "gather_indexes"
         labels_and_gather_indexes = [self.builder.encode(target1[0], max_length=max_labels_length) for target1 in targets1]
-        labels = torch.cat([label for label in [lab for lab, _ in labels_and_gather_indexes]], dim=0).to("cuda")
+        labels = torch.cat([label for label in [lab for lab, _ in labels_and_gather_indexes]], dim=0).to("cuda:1")
         gather_indexes = [gather_index for gather_index in [g for _, g in labels_and_gather_indexes]]
 
         # target_idx is the index of target word in the token list.
         target_idxs = [g[q[1] + 1] for g, q in zip(gather_indexes, queries)]
-        # target_idxs = torch.tensor(target_idxs, device="cuda").unsqueeze(-1)
-        target_idxs = torch.tensor([range(*i) for i in target_idxs], device="cuda")
+        # target_idxs = torch.tensor(target_idxs, device="cuda:1").unsqueeze(-1)
+        target_idxs = torch.tensor([range(*i) for i in target_idxs], device="cuda:1")
 
         # token_idx is the index of target word in the vocabulary of BERT
         # token_idxs = input_ids.gather(dim=-1, index=target_idxs)
@@ -214,29 +244,38 @@ class Coercion:
         vocab_size = len(tokenizer)  # can be checked with tokenizer.get_added_vocab()
         min_token_idx = min(token_idxs)
         # Get all indices smaller than the new token_idx:
-        indices = torch.tensor([i for i in range(vocab_size) if i < min_token_idx], device="cuda", dtype=torch.long)
+        indices = torch.tensor([i for i in range(vocab_size) if i < min_token_idx], device="cuda:1", dtype=torch.long)
 
-        for _ in trange(epoch):
-            optimizer.zero_grad()
-            outputs = model(input_ids, output_hidden_states=True, labels=labels)
-            # loss for generation needs to be calculated manually because of smaller vocab size:
-            # masked_lm_loss = loss_fct(outputs.logits.view(-1, model.config.vocab_size-1), labels.view(-1))
+        vec_targets = torch.stack(vec_targets).squeeze()
 
-            z = torch.gather(outputs.decoder_hidden_states[-1], dim=1,
-                             index=target_idxs.unsqueeze(-1).expand(-1, -1, model.config.d_model))  # d_model == 1024
+        dataloader = torch.utils.data.DataLoader(list(zip(input_ids, labels, target_idxs, vec_targets)),
+                                                 batch_size=self.batch_size)
 
-            loss = loss_fct(z, torch.stack(vec_targets).squeeze())
-            print(f"\ttrain loss = {float(loss)}")
+        with tqdm(total=5, desc="Train Loss", position=2) as loss_bar:
+            for _ in trange(epoch, position=1, desc="Epoch", leave=True):
+                for batched_input_ids, batched_labels, batched_target_idxs, batched_vec_targets in dataloader:
+                    optimizer.zero_grad()
 
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            model.model.encoder.embed_tokens.weight.grad[indices] = 0
-            optimizer.step()
-            scheduler.step()
+                    # "Automatic mixed-precision" (AMP) is faster and helps reducing the workload of the GPU:
+                    # with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=False):  # maybe float16 if bfloat16 doesn't work
+                    # ... this does seem to be buggy, though...
 
-            # try to fix the feed-forward bug
-            # outputs = model(input_ids)
-            # bert_z = torch.index_select(outputs.encoder_last_hidden_state[0], dim=0, index=target_idxs.squeeze(-1))
+                    outputs = model(batched_input_ids, output_hidden_states=True, labels=batched_labels)
+
+                    z = torch.gather(
+                        outputs.decoder_hidden_states[-1], dim=1,
+                        index=batched_target_idxs.unsqueeze(-1).expand(-1, -1, model.config.d_model)  # d_model == 1024
+                    )
+
+                    loss = loss_fct(z, batched_vec_targets)
+                    loss_bar.n = float(loss)
+                    loss_bar.refresh()
+
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    model.model.encoder.embed_tokens.weight.grad[indices] = 0
+                    optimizer.step()
+                    scheduler.step()
 
         # get the z* for classification
         vec = model.get_input_embeddings()(token_idxs).squeeze(1)[0]  # this is z*; [0] because all the same
@@ -248,7 +287,7 @@ class Coercion:
         np.save(CACHE + "temp_z_arrays_mbart.npy", np.array(z_list))
         np.save(CACHE + "temp_loss_arrays_mbart.npy", np.array(loss_list))
 
-        s = 'Final loss = {a}'.format(a=str(loss.cpu().detach().numpy()))
+        s = '\n\nFinal loss = {a}'.format(a=str(loss.cpu().detach().numpy()))
         print(s)
 
         return model
@@ -259,7 +298,7 @@ class Coercion:
         model.eval()
         with torch.no_grad():
             # Find the learning target x
-            input_ids = input_ids.to('cuda')
+            input_ids = input_ids.to('cuda:1')
             outputs = model(input_ids=input_ids, output_hidden_states=True)  # labels are shifted right automatically
             # get all indices that are part of the KEE; slice is needed for converting the tuple to a slice
             x_target = outputs.decoder_hidden_states[-1][:, slice(*target_idx)]
@@ -319,10 +358,10 @@ class Coercion:
         pred_and_gather_indexes = [self.builder.encode(pred, max_length=max_length) for pred in predictions]
         prediction_ids = torch.stack([i for i, _ in pred_and_gather_indexes])
 
-        input_ids = input_ids.to('cuda')
-        prediction_ids = prediction_ids.to('cuda')
+        input_ids = input_ids.to('cuda:1')
+        prediction_ids = prediction_ids.to('cuda:1')
         with torch.no_grad():
-            logits = [model(input_ids, labels=prediction.to("cuda")).logits[0, :, :] for prediction in prediction_ids]
+            logits = [model(input_ids, labels=prediction.to("cuda:1")).logits[0, :, :] for prediction in prediction_ids]
             logits = torch.stack(logits, dim=0)
             # Use torch.gather to select values from probabilities based on prediction_ids
             # selected_logits = torch.gather(logits, -1, prediction_ids)
@@ -396,6 +435,8 @@ def get_lowest_loss_arrays(z_list, loss_list):
 
 
 if __name__ == '__main__':
+    setup_seed(15)
+    batch_size = 8
 
     z_list = []
     z_eps_list = []
@@ -411,11 +452,11 @@ if __name__ == '__main__':
 
     tokenizer = MBart50Tokenizer.from_pretrained("facebook/mbart-large-50", src_lang="de_DE", tgt_lang="de_DE")
     builder = DataBuilder(tokenizer)
-    co = Coercion(builder)
-    for group in data:
+    co = Coercion(builder, batch_size)
+    for group in tqdm(data, desc="Construction", position=0, leave=True):
         co.coercion(group)
         print('==' * 40)
-        break  # TODO test
+        # break  # TODO test
 
     result = get_lowest_loss_arrays(z_list, loss_list)
 

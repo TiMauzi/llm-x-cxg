@@ -4,13 +4,10 @@ Bert Coercion
 import csv
 import itertools
 import random
-import sys
 from typing import List, Tuple, TextIO
 
-from transformers import AutoTokenizer, MBart50Tokenizer, MBartForConditionalGeneration, Text2TextGenerationPipeline, \
-    MBartTokenizer, MBart50TokenizerFast
+from transformers import AutoTokenizer, MBart50Tokenizer, MBartForConditionalGeneration, Text2TextGenerationPipeline
 from transformers import get_linear_schedule_with_warmup
-from transformers import AdamW
 import torch
 import torch.nn as nn
 import torch.optim
@@ -20,11 +17,6 @@ import jsonlines
 import json
 import numpy as np
 import os
-import sklearn
-from sklearn.metrics.pairwise import cosine_similarity
-from scipy import spatial
-from sklearn.metrics import mean_squared_error
-import pickle
 
 NEW_TOKEN = '#TOKEN#'
 
@@ -37,7 +29,9 @@ DATASET_PATH = "../../data/pseudowords/CoMapp_Dataset.csv"
 DIR_OUT = "../../out/"  # path to dir to save the pseudowords
 CACHE = "../../out/cache/"  # path to cach directory
 
-# Helpers:
+################################################
+
+# Helper functions:
 
 def setup_seed(seed: int, strict: bool = True):
     torch.manual_seed(seed)
@@ -48,8 +42,12 @@ def setup_seed(seed: int, strict: bool = True):
 
 
 def setup_reproducible():
-    torch.backends.cudnn.benchmark = False  # makes faster
-    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"  # "A handful of CUDA operations are nondeterministic if the CUDA version is 10.2 or greater, unless the environment variable CUBLAS_WORKSPACE_CONFIG=:4096:8 or CUBLAS_WORKSPACE_CONFIG=:16:8 is set." (https://pytorch.org/docs/stable/generated/torch.use_deterministic_algorithms.html)
+    torch.backends.cudnn.benchmark = False  # accelerate code speed
+
+    # "A handful of CUDA operations are nondeterministic if the CUDA version is 10.2 or greater, unless the environment
+    # variable CUBLAS_WORKSPACE_CONFIG=:4096:8 or CUBLAS_WORKSPACE_CONFIG=:16:8 is set."
+    # (from: https://pytorch.org/docs/stable/generated/torch.use_deterministic_algorithms.html)
+    os.environ["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
     torch.use_deterministic_algorithms(True)
 
 
@@ -65,7 +63,7 @@ class DataBuilder:
         _, gather_indexes = self._manual_tokenize(tokens)
         # Tokenization
         if max_length:
-            # TODO Note by huggingface:
+            # Note by huggingface:
             #  "We strongly recommend passing in an `attention_mask` since your input_ids may be padded."
             encode_dict = self.tokenizer(
                 text, return_attention_mask=True,
@@ -102,12 +100,9 @@ class Coercion:
         self.builder = builder
         self.batch_size = batch_size
 
-    def coercion(self,
-                 group,
-                 k: int = 5,
-                 batch_size = 8):
+    def coercion(self, group, k: int = 5):
         model = MBartForConditionalGeneration.from_pretrained("facebook/mbart-large-50",
-                                                              return_dict=True)  #, decoder_start_token_id=250003)  # 250003 == de_DE
+                                                              return_dict=True)
         model.to('cuda')
 
         self.builder.tokenizer.add_tokens(NEW_TOKEN)
@@ -118,8 +113,7 @@ class Coercion:
         targets1 = []
         vec_targets = []
 
-        # Print targets (and their id's) and the query (and its id)
-        # TODO Caching
+        # Print targets (and their ids) and the query (and its id)
         for entry in group:
             i = 0
             while True:
@@ -129,12 +123,12 @@ class Coercion:
                 print(f'target {i}: {entry["target" + str(i)]}, {entry["target" + str(i) + "_idx"]}')
             print(f'query: {entry["query"]}, {entry["query_idx"]}')
 
-            # todo auch ändern, s. u.
+            # We need a Text2TextGeneration here, because mBart is created for translation, originally.
+            # Only this way, there can be multiple predicted words for one <mask>.
             nlp = Text2TextGenerationPipeline(model=model, tokenizer=self.builder.tokenizer, device="cuda")
             output = nlp(entry["query"], max_length=30, num_return_sequences=5, num_beams=100)
             output = self._format(output)
             print(f"output: {output}")
-            # print('<mask> = ' + str(outputs))  # TODO Just show the replaced <mask> token
 
             for j in range(1, i):
                 vec_targets.append(
@@ -162,18 +156,10 @@ class Coercion:
             weight = model.model.shared.weight.data[-1]
             nn.init.normal_(weight, mean=0.0, std=model.config.init_std)
 
-            # Before training
-            # print('Before training:')
-            # We need a Text2TextGeneration here, because mBart is created for translation, originally.
-            # Only this way, there can be multiple predicted words for one <mask>.
-            # nlp = Text2TextGenerationPipeline(model=model, tokenizer=self.builder.tokenizer, device="cuda")
-
             model = self._train(model, vec_targets, queries, targets1)
 
             print("*************************************************************************")
-            # After training
             print('After training:')
-            nlp = Text2TextGenerationPipeline(model=model, tokenizer=self.builder.tokenizer, device="cuda")
 
             # For determining the original token's length, you take a random (the first) target, whitespace-tokenize it
             # and extract the token string. Then you tokenize it using the tokenizer. You can then count the input_ids,
@@ -183,17 +169,12 @@ class Coercion:
                 print(f"query: {new_query}")
 
                 target_length = len(new_query) - 1 + token_length  # length of new query - #TOKEN# + target token
-                #output = nlp(new_query, max_length=target_length, num_return_sequences=5, num_beams=100)
-                #output = self._format(output)
-                #print(f'output: {output}')
 
                 outputs = tokenizer(new_query, return_tensors="pt").to(model.device)
                 outputs = model.generate(outputs["input_ids"], max_length=target_length, num_return_sequences=5,
                                          num_beams=100, output_scores=True, return_dict_in_generate=True)
                 output_strings = tokenizer.batch_decode(outputs.sequences, skip_special_tokens=True)
                 output_probs = torch.exp(outputs.sequences_scores)
-
-                # TODO Finde den score, der jeweils zu den 5 Outputs gehört
 
                 print([f'output: {output}, score: {score}'
                        for output, score in zip(output_strings, output_probs)])
@@ -205,7 +186,7 @@ class Coercion:
     def _train(self, model, vec_targets, queries, targets1):
         loss_fct = nn.MSELoss(reduction='mean')  # mean will be computed later
         optimizer = torch.optim.AdamW(model.parameters(), lr=0.003, eps=1e-8)
-        epoch = 10  # 1000 was the default for BERT; but 400 seems to be enough to practically minimize the loss
+        epoch = 1000  # 1000 was the default for BERT; but 400 seems to be enough to practically minimize the loss
         scheduler = get_linear_schedule_with_warmup(
             optimizer,
             num_warmup_steps=0,
@@ -221,24 +202,21 @@ class Coercion:
 
         input_ids_and_gather_indexes = [self.builder.encode(query[0], max_length=max_length) for query in queries]
         input_ids = torch.cat([input_id for input_id in [i for i, _ in input_ids_and_gather_indexes]], dim=0).to("cuda")
-        # We actually don't need the index tuples here, because the real indices are stored within the labels:
-        # gather_indexes = [gather_index for gather_index in [g for _, g in input_ids_and_gather_indexes]]
 
         # This is needed for computing the loss. This is because mBart is a generative model unlike Bert, so
         # the decoder needs the solution during training time. It also needs to be shifted right
         # (happens automatically here).
         # [0] because I don't need "gather_indexes"
-        labels_and_gather_indexes = [self.builder.encode(target1[0], max_length=max_labels_length) for target1 in targets1]
+        labels_and_gather_indexes = [self.builder.encode(target1[0], max_length=max_labels_length)
+                                     for target1 in targets1]
         labels = torch.cat([label for label in [lab for lab, _ in labels_and_gather_indexes]], dim=0).to("cuda")
         gather_indexes = [gather_index for gather_index in [g for _, g in labels_and_gather_indexes]]
 
         # target_idx is the index of target word in the token list.
         target_idxs = [g[q[1] + 1] for g, q in zip(gather_indexes, queries)]
-        # target_idxs = torch.tensor(target_idxs, device="cuda").unsqueeze(-1)
         target_idxs = torch.tensor([range(*i) for i in target_idxs], device="cuda")
 
         # token_idx is the index of target word in the vocabulary of BERT
-        # token_idxs = input_ids.gather(dim=-1, index=target_idxs)
         token_idxs = input_ids.gather(dim=-1, index=target_idxs[:, 0].unsqueeze(-1))
         vocab_size = len(tokenizer)  # can be checked with tokenizer.get_added_vocab()
         min_token_idx = min(token_idxs)
@@ -316,19 +294,17 @@ class Coercion:
         original_bias = model.final_logits_bias
         # The vocabulary of the decoder doesn't need #TOKEN# and would be too big:
         original_decoder_embed_tokens_weight = model.model.decoder.embed_tokens.weight
-        # original_decoder_embed_tokens_bias = model.model.decoder.embed_tokens.bias
 
         # The argument len(tokenizer)-1 should prevent the model from outputting #TOKEN#:
-        lm_head = nn.Linear(in_features=1024, out_features=len(tokenizer)-1, bias=False)
+        lm_head = nn.Linear(in_features=1024, out_features=len(tokenizer) - 1, bias=False)
         lm_head.weight.requires_grad = False
-        model.register_buffer("final_logits_bias", torch.zeros((1, model.model.shared.num_embeddings-1)))
+        model.register_buffer("final_logits_bias", torch.zeros((1, model.model.shared.num_embeddings - 1)))
         lm_head.weight.data.copy_(original_weight.data[:-1])
         model.final_logits_bias.copy_(original_bias[:, :-1])
         model.lm_head = lm_head
-        decoder_embed_tokens = nn.Embedding(len(tokenizer)-1, model.config.d_model, model.config.pad_token_id)
+        decoder_embed_tokens = nn.Embedding(len(tokenizer) - 1, model.config.d_model, model.config.pad_token_id)
         # For decoder, see above:
         decoder_embed_tokens.weight.data.copy_(original_decoder_embed_tokens_weight.data[:-1])
-        # decoder_embed_tokens.bias.data.copy_(original_decoder_embed_tokens_bias.data[:, :-1])
         decoder_embed_tokens.requires_grad_(False)
         model.model.decoder.embed_tokens = decoder_embed_tokens
         model.config.vocab_size -= 1
@@ -347,36 +323,6 @@ class Coercion:
                 score = item['score']
                 s = ':'.join([token_str, str(score)])
                 reval.append(s)
-        return reval
-
-    def _predict_z(self, model, query, predictions):
-        max_length = max([self.builder.encode(pred)[0].size(-1) for pred in predictions])
-
-        input_ids, _ = self.builder.encode(query[0])
-
-        pred_and_gather_indexes = [self.builder.encode(pred, max_length=max_length) for pred in predictions]
-        prediction_ids = torch.stack([i for i, _ in pred_and_gather_indexes])
-
-        input_ids = input_ids.to('cuda')
-        prediction_ids = prediction_ids.to('cuda')
-        with torch.no_grad():
-            logits = [model(input_ids, labels=prediction.to("cuda")).logits[0, :, :] for prediction in prediction_ids]
-            logits = torch.stack(logits, dim=0)
-            # Use torch.gather to select values from probabilities based on prediction_ids
-            # selected_logits = torch.gather(logits, -1, prediction_ids)
-            # logits_sum = selected_logits.sum(dim=-1, keepdim=True).squeeze(-1)
-
-        probs = logits.softmax(dim=-1)
-        selected_probs = torch.gather(probs, -1, prediction_ids)
-        probs_prod = selected_probs.prod(dim=-1, keepdim=True).squeeze()
-        # values, output = probs.topk(5, dim=-1)
-        reval = []
-        for prob, pred in zip(probs_prod.tolist(), predictions):
-            s = {
-                'score': prob,
-                'prediction': pred  # self.builder.tokenizer.convert_ids_to_tokens(p)
-            }
-            reval.append(s)
         return reval
 
 
@@ -399,9 +345,7 @@ def get_lowest_loss_arrays(z_list, loss_list):
 
     loss_list = list(map(float, loss_list))
 
-    # print(z_array)
     for vec in z_array:
-        # print("vec.shape", vec.shape) #(768,)
         z_list.append(vec)
 
     # empty lists

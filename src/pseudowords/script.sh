@@ -11,7 +11,7 @@
 # Calculate total_tasks using a subshell and Python
 total_tasks=$(python -c "import itertools
 import json
-with open('../../out/CoMaPP_all.json') as json_file:
+with open('../../data/pseudowords/CoMaPP_all.json') as json_file:
     data = json.load(json_file)
 data.sort(key=lambda x: x['label'])
 data = [list(group) for _, group in itertools.groupby(data, key=lambda x: x['label'])]

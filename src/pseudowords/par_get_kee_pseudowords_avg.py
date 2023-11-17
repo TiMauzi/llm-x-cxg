@@ -400,7 +400,7 @@ if __name__ == '__main__':
 
     tokenizer = MBart50Tokenizer.from_pretrained("facebook/mbart-large-50", src_lang="de_DE", tgt_lang="de_DE")
     builder = DataBuilder(tokenizer)
-    co = Coercion(builder, batch_size=4)
+    co = Coercion(builder, batch_size=2)
     co.coercion(data[args.task_id])
     print('==' * 40)
 

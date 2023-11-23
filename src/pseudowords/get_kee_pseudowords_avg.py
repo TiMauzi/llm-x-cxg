@@ -103,7 +103,7 @@ class Coercion:
     def coercion(self, group, k: int = 5):
         model = MBartForConditionalGeneration.from_pretrained("facebook/mbart-large-50",
                                                               return_dict=True)
-        model.to('cuda:1')
+        model.to('cuda:0')
 
         self.builder.tokenizer.add_tokens(NEW_TOKEN)
         model.resize_token_embeddings(len(self.builder.tokenizer))
@@ -125,7 +125,7 @@ class Coercion:
 
             # We need a Text2TextGeneration here, because mBart is created for translation, originally.
             # Only this way, there can be multiple predicted words for one <mask>.
-            nlp = Text2TextGenerationPipeline(model=model, tokenizer=self.builder.tokenizer, device="cuda:1")
+            nlp = Text2TextGenerationPipeline(model=model, tokenizer=self.builder.tokenizer, device="cuda:0")
             output = nlp(entry["query"], max_length=30, num_return_sequences=5, num_beams=20)
             output = self._format(output)
             print(f"output: {output}")
@@ -192,6 +192,8 @@ class Coercion:
             num_warmup_steps=0,
             num_training_steps=epoch)
 
+
+
         # This snippet, retrieving the possible padding, does the following:
         #  (a) encode each query's text (first [0]),
         #  (b) get the input_ids (second [0]),
@@ -201,7 +203,7 @@ class Coercion:
         max_labels_length = max([(self.builder.encode(target1[0])[0]).shape[-1] for target1 in targets1])
 
         input_ids_and_gather_indexes = [self.builder.encode(query[0], max_length=max_length) for query in queries]
-        input_ids = torch.cat([input_id for input_id in [i for i, _ in input_ids_and_gather_indexes]], dim=0).to("cuda:1")
+        input_ids = torch.cat([input_id for input_id in [i for i, _ in input_ids_and_gather_indexes]], dim=0).to("cuda:0")
 
         # This is needed for computing the loss. This is because mBart is a generative model unlike Bert, so
         # the decoder needs the solution during training time. It also needs to be shifted right
@@ -209,26 +211,49 @@ class Coercion:
         # [0] because I don't need "gather_indexes"
         labels_and_gather_indexes = [self.builder.encode(target1[0], max_length=max_labels_length)
                                      for target1 in targets1]
-        labels = torch.cat([label for label in [lab for lab, _ in labels_and_gather_indexes]], dim=0).to("cuda:1")
+        labels = torch.cat([label for label in [lab for lab, _ in labels_and_gather_indexes]], dim=0).to("cuda:0")
         gather_indexes = [gather_index for gather_index in [g for _, g in labels_and_gather_indexes]]
 
         # target_idx is the index of target word in the token list.
         target_idxs = [g[q[1] + 1] for g, q in zip(gather_indexes, queries)]
-        target_idxs = torch.tensor([range(*i) for i in target_idxs], device="cuda:1")
+
+        target_ranges = [range(*i) for i in target_idxs]
+        target_lengths = {len(r) for r in target_ranges}
+
+        removed = 0
+        # check if all tokens have the same length (should usually be the case, but not always)
+        if len(target_lengths) > 1:
+            # TODO The new token has different lengths in different examples. For now, we remove the sentences with "different lengths"...
+            # in case there are a few new tokens with different lengths, remove the corresponding sentences
+            most_common_target_length = max({len(r) for r in target_ranges}, key=target_ranges.count)
+
+            for i in range(len(target_ranges)):
+                if len(target_ranges[i]) != most_common_target_length:
+                    gather_indexes.pop(i-removed)
+                    input_ids = torch.cat((input_ids[:i-removed], input_ids[i-removed+1:]))  # equivalent to "pop"
+                    input_ids_and_gather_indexes.pop(i - removed)
+                    labels = torch.cat((labels[:i-removed], labels[i-removed+1:]))  # equivalent to "pop"
+                    labels_and_gather_indexes.pop(i-removed)
+                    queries.pop(i-removed)
+                    target_idxs.pop(i-removed)
+                    targets1.pop(i-removed)
+                    vec_targets.pop(i-removed)
+                    removed += 1
+        target_idxs = torch.tensor([range(*i) for i in target_idxs], device="cuda:0")
 
         # token_idx is the index of target word in the vocabulary of BERT
         token_idxs = input_ids.gather(dim=-1, index=target_idxs[:, 0].unsqueeze(-1))
         vocab_size = len(tokenizer)  # can be checked with tokenizer.get_added_vocab()
         min_token_idx = min(token_idxs)
         # Get all indices smaller than the new token_idx:
-        indices = torch.tensor([i for i in range(vocab_size) if i < min_token_idx], device="cuda:1", dtype=torch.long)
+        indices = torch.tensor([i for i in range(vocab_size) if i < min_token_idx], device="cuda:0", dtype=torch.long)
 
-        vec_targets = torch.stack(vec_targets).squeeze()
+        vec_targets = torch.stack(vec_targets).squeeze(1)
 
         dataloader = torch.utils.data.DataLoader(list(zip(input_ids, labels, target_idxs, vec_targets)),
                                                  batch_size=self.batch_size)
 
-        with tqdm(total=5, desc="Train Loss", position=2) as loss_bar:
+        with tqdm(total=6, desc="Train Loss", position=2) as loss_bar:
             for _ in trange(epoch, position=1, desc="Epoch", leave=True):
                 for batched_input_ids, batched_labels, batched_target_idxs, batched_vec_targets in dataloader:
                     optimizer.zero_grad()
@@ -244,6 +269,7 @@ class Coercion:
                         index=batched_target_idxs.unsqueeze(-1).expand(-1, -1, model.config.d_model)  # d_model == 1024
                     )
 
+                    # TODO shape should have one dimension more??
                     loss = loss_fct(z, batched_vec_targets)
                     loss_bar.n = float(loss)
                     loss_bar.refresh()
@@ -264,7 +290,7 @@ class Coercion:
         np.save(CACHE + "temp_z_arrays_mbart.npy", np.array(z_list))
         np.save(CACHE + "temp_loss_arrays_mbart.npy", np.array(loss_list))
 
-        s = '\n\nFinal loss = {a}'.format(a=str(loss.cpu().detach().numpy()))
+        s = '\n\nFinal loss = {a}'.format(a=str(loss.cpu().detach().numpy())) + f"\n(Number of removed sentences: {removed})"
         print(s)
 
         return model
@@ -275,7 +301,7 @@ class Coercion:
         model.eval()
         with torch.no_grad():
             # Find the learning target x
-            input_ids = input_ids.to('cuda:1')
+            input_ids = input_ids.to('cuda:0')
             outputs = model(input_ids=input_ids, output_hidden_states=True)  # labels are shifted right automatically
             # get all indices that are part of the KEE; slice is needed for converting the tuple to a slice
             x_target = outputs.decoder_hidden_states[-1][:, slice(*target_idx)]
@@ -410,7 +436,7 @@ if __name__ == '__main__':
 
     # data = split_data(data, len(devices))
 
-    for group in tqdm(data, desc="Construction", position=0, leave=True):
+    for group in tqdm(data[5:], desc="Construction", position=0, leave=True):
         co.coercion(group)  # , devices)
         print('==' * 40)
 

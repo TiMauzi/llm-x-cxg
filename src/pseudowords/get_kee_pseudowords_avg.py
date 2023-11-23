@@ -186,7 +186,7 @@ class Coercion:
     def _train(self, model, vec_targets, queries, targets1):
         loss_fct = nn.MSELoss(reduction='mean')  # mean will be computed later
         optimizer = torch.optim.AdamW(model.parameters(), lr=0.005, eps=1e-8)
-        epoch = 5000 // len(queries)  # 1000 was the default for BERT; but 400 seems to be enough to practically minimize the loss
+        epoch = 2  # 5000 // len(queries)  # 1000 was the default for BERT; but 400 seems to be enough to practically minimize the loss
         scheduler = get_linear_schedule_with_warmup(
             optimizer,
             num_warmup_steps=0,
@@ -418,6 +418,12 @@ if __name__ == '__main__':
     loss_list = []
     outputs_list = []
 
+    # load checkpoints if available
+    if os.path.isfile(CACHE + "temp_z_arrays_mbart.npy"):
+        z_list = np.load(CACHE + "temp_z_arrays_mbart.npy").tolist()
+    if os.path.isfile(CACHE + "temp_loss_arrays_mbart.npy"):
+        loss_list = np.load(CACHE + "temp_loss_arrays_mbart.npy").tolist()
+
     with open(QUERIES_PATH) as json_file:
         data = json.load(json_file)
 
@@ -429,18 +435,42 @@ if __name__ == '__main__':
     builder = DataBuilder(tokenizer)
     co = Coercion(builder, batch_size)
 
-    # def split_data(data, chunks):
-    #     k, m = divmod(len(data), chunks)
-    #     return (a[i*k+min(i, m):(i+1)*k+min(i+1, m)] for i in range(chunks))
+    # TODO:
+    # import os
+    #
+    # directory_path = "constructions"  # Replace with the path to your directory
+    #
+    # # Get a list of files in the directory
+    # files = os.listdir(directory_path)
+    #
+    # # Filter out files that do not match the pattern
+    # filtered_files = [file for file in files if file.startswith("pseudowords_comapp_") and file.endswith(".npy")]
+    #
+    # # Extract integers from the file names
+    # integers = [int(file.split("_")[3][:-4]) for file in filtered_files]
+    #
+    # # Find the maximum integer
+    # max_integer = max(integers, default=None)
+    #
+    # print("The highest integer is:", max_integer)
+    #
+    # --> gets the start even if not all constructions worked!!
+    start = len(z_list) // 5
+    assert len(z_list) % 5 == 0
+    print(f"Started at construction number {start}.")
+    i = start
+    for group in tqdm(data[start:], initial=start, total=len(data), desc="Construction", position=0, leave=True):
+        try:
+            co.coercion(group)  # , devices)
+            print('==' * 40)
+            result = get_lowest_loss_arrays(z_list, loss_list)[-5:]
 
-
-    # data = split_data(data, len(devices))
-
-    for group in tqdm(data[5:], desc="Construction", position=0, leave=True):
-        co.coercion(group)  # , devices)
-        print('==' * 40)
+            # save the pseudowords
+            np.save(CACHE + f'constructions/pseudowords_comapp_{i}.npy', result)
+        except:
+            print("Construction number " + i + " threw an error!")
+            pass
+        i += 1
 
     result = get_lowest_loss_arrays(z_list, loss_list)
-
-    # save the pseudowords
-    np.save(DIR_OUT + 'pseudowords_comapp.npy', result)
+    np.save(DIR_OUT + f'pseudowords_comapp.npy', result)

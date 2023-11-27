@@ -189,7 +189,7 @@ class Coercion:
     def _train(self, model, vec_targets, queries, targets1):
         loss_fct = nn.MSELoss(reduction='mean')  # mean will be computed later
         optimizer = torch.optim.AdamW(model.parameters(), lr=0.005, eps=1e-8)
-        epoch = 10000 // len(queries)  # 1000 was the default for BERT; but 400 seems to be enough to practically minimize the loss
+        epoch = 7500 // len(queries)  # 1000 was the default for BERT; but 400 seems to be enough to practically minimize the loss
         scheduler = get_linear_schedule_with_warmup(
             optimizer,
             num_warmup_steps=0,
@@ -411,6 +411,7 @@ if __name__ == '__main__':
     parser.add_argument('--device', default="cuda", type=str, required=False, help='Task ID for the current task')
     parser.add_argument('--start', default=0, type=int, required=False, help='Which construction to start with')
     parser.add_argument('--end', default=562, type=int, required=False, help='Which construction to stop at')
+    parser.add_argument('--use_checkpoint', default=False, type=bool, required=False, help='Use calculated checkpoint position')
     args = parser.parse_args()
 
     device = args.device
@@ -458,13 +459,12 @@ if __name__ == '__main__':
     #
     # --> gets the start even if not all constructions worked!!
 
+    start = args.start
     end = args.end
-
-
-    assert len(z_list) % 5 == 0
-    start = len(z_list) // 5
-    if start < args.start <= end or start > end:  # start from the last checkpoint if this makes sense
-        start = args.start
+    if args.use_checkpoint:
+        start = len(z_list) // 5
+        assert len(z_list) % 5 == 0
+        assert start < end
 
     print(f"Started at construction number {start}.")
     i = start
@@ -477,9 +477,9 @@ if __name__ == '__main__':
 
             # save the pseudowords
             np.save(CACHE + f'constructions/pseudowords_comapp_{i}.npy', result)
-        except:
-            print(f"Construction with index {i} threw an error!")
-            pass
+        except Exception as e:
+            if type(e) != KeyboardInterrupt:
+                print(f"Construction with index {i} threw an error!")
         i += 1
 
     result = get_lowest_loss_arrays(z_list, loss_list)

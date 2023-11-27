@@ -463,7 +463,7 @@ if __name__ == '__main__':
 
     assert len(z_list) % 5 == 0
     start = len(z_list) // 5
-    if start < args.start <= end:  # start from the last checkpoint
+    if start < args.start <= end or start > end:  # start from the last checkpoint if this makes sense
         start = args.start
 
     print(f"Started at construction number {start}.")

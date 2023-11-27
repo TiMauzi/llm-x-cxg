@@ -189,7 +189,7 @@ class Coercion:
     def _train(self, model, vec_targets, queries, targets1):
         loss_fct = nn.MSELoss(reduction='mean')  # mean will be computed later
         optimizer = torch.optim.AdamW(model.parameters(), lr=0.005, eps=1e-8)
-        epoch = 5000 // len(queries)  # 1000 was the default for BERT; but 400 seems to be enough to practically minimize the loss
+        epoch = 10000 // len(queries)  # 1000 was the default for BERT; but 400 seems to be enough to practically minimize the loss
         scheduler = get_linear_schedule_with_warmup(
             optimizer,
             num_warmup_steps=0,
@@ -478,7 +478,7 @@ if __name__ == '__main__':
             # save the pseudowords
             np.save(CACHE + f'constructions/pseudowords_comapp_{i}.npy', result)
         except:
-            print("Construction number " + i + " threw an error!")
+            print(f"Construction with index {i} threw an error!")
             pass
         i += 1
 

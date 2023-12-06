@@ -189,7 +189,7 @@ class Coercion:
     def _train(self, model, vec_targets, queries, targets1):
         loss_fct = nn.MSELoss(reduction='mean')  # mean will be computed later
         optimizer = torch.optim.AdamW(model.parameters(), lr=0.005, eps=1e-8)
-        epoch = 7500 // len(queries)  # 1000 was the default for BERT; but 400 seems to be enough to practically minimize the loss
+        epoch = 5000 // len(queries)  # 1000 was the default for BERT; but 400 seems to be enough to practically minimize the loss
         scheduler = get_linear_schedule_with_warmup(
             optimizer,
             num_warmup_steps=0,
@@ -288,8 +288,8 @@ class Coercion:
         loss_list.append(str(loss.cpu().detach().numpy()))
 
         # save checkpoints
-        np.save(CACHE + "temp_z_arrays_mbart.npy", np.array(z_list))
-        np.save(CACHE + "temp_loss_arrays_mbart.npy", np.array(loss_list))
+        np.save(CACHE + f"temp_z_arrays_mbart_{temp}.npy", np.array(z_list))
+        np.save(CACHE + f"temp_loss_arrays_mbart_{temp}.npy", np.array(loss_list))
 
         s = '\n\nFinal loss = {a}'.format(a=str(loss.cpu().detach().numpy())) + f"\n(Number of removed sentences: {removed})"
         print(s)
@@ -411,7 +411,7 @@ if __name__ == '__main__':
     parser.add_argument('--device', default="cuda", type=str, required=False, help='Task ID for the current task')
     parser.add_argument('--start', default=0, type=int, required=False, help='Which construction to start with')
     parser.add_argument('--end', default=562, type=int, required=False, help='Which construction to stop at')
-    parser.add_argument('--use_checkpoint', default=False, type=bool, required=False, help='Use calculated checkpoint position')
+    parser.add_argument('--temp', default=False, type=int, required=False, help='Which temp files to use.')
     args = parser.parse_args()
 
     device = args.device
@@ -421,11 +421,13 @@ if __name__ == '__main__':
     loss_list = []
     outputs_list = []
 
+    temp = args.temp
+
     # load checkpoints if available
-    if os.path.isfile(CACHE + "temp_z_arrays_mbart.npy"):
-        z_list = np.load(CACHE + "temp_z_arrays_mbart.npy").tolist()
-    if os.path.isfile(CACHE + "temp_loss_arrays_mbart.npy"):
-        loss_list = np.load(CACHE + "temp_loss_arrays_mbart.npy").tolist()
+    if os.path.isfile(CACHE + f"temp_z_arrays_mbart_{temp}.npy"):
+        z_list = np.load(CACHE + f"temp_z_arrays_mbart_{temp}.npy").tolist()
+    if os.path.isfile(CACHE + f"temp_loss_arrays_mbart_{temp}.npy"):
+        loss_list = np.load(CACHE + f"temp_loss_arrays_mbart_{temp}.npy").tolist()
 
     with open(QUERIES_PATH) as json_file:
         data = json.load(json_file)
@@ -438,33 +440,12 @@ if __name__ == '__main__':
     builder = DataBuilder(tokenizer)
     co = Coercion(builder, batch_size)
 
-    # TODO:
-    # import os
-    #
-    # directory_path = "constructions"  # Replace with the path to your directory
-    #
-    # # Get a list of files in the directory
-    # files = os.listdir(directory_path)
-    #
-    # # Filter out files that do not match the pattern
-    # filtered_files = [file for file in files if file.startswith("pseudowords_comapp_") and file.endswith(".npy")]
-    #
-    # # Extract integers from the file names
-    # integers = [int(file.split("_")[3][:-4]) for file in filtered_files]
-    #
-    # # Find the maximum integer
-    # max_integer = max(integers, default=None)
-    #
-    # print("The highest integer is:", max_integer)
-    #
-    # --> gets the start even if not all constructions worked!!
-
     start = args.start
     end = args.end
-    if args.use_checkpoint:
-        start = len(z_list) // 5
-        assert len(z_list) % 5 == 0
-        assert start < end
+    #if args.use_checkpoint:
+    #    start = len(z_list) // 5
+    #    assert len(z_list) % 5 == 0
+    #    assert start < end
 
     print(f"Started at construction number {start}.")
     i = start
@@ -483,4 +464,4 @@ if __name__ == '__main__':
         i += 1
 
     result = get_lowest_loss_arrays(z_list, loss_list)
-    np.save(DIR_OUT + f'pseudowords_comapp.npy', result)
+    np.save(DIR_OUT + f'pseudowords_comapp_{start}_{end}.npy', result)

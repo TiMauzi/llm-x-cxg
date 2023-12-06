@@ -454,10 +454,10 @@ if __name__ == '__main__':
         try:
             co.coercion(group)  # , devices)
             print('==' * 40)
-            result = get_lowest_loss_arrays(z_list, loss_list)[-5:]
+            result = get_lowest_loss_arrays(z_list, loss_list)
 
             # save the pseudowords
-            np.save(CACHE + f'constructions/pseudowords_comapp_{i}.npy', result)
+            np.save(DIR_OUT + f'pseudowords_comapp_{start}_{end}.npy', result)
         except Exception as e:
             if type(e) != KeyboardInterrupt:
                 print(f"Construction with index {i} threw an error!")

@@ -105,11 +105,11 @@ class Coercion:
 
     def coercion(self, group, k: int = 5):
         model = MBartForConditionalGeneration.from_pretrained("facebook/mbart-large-50",
-                                                              return_dict=True)
+                                                              return_dict=True)  # load model and save to cuda
         model.to(device)
 
-        self.builder.tokenizer.add_tokens(NEW_TOKEN)
-        model.resize_token_embeddings(len(self.builder.tokenizer))
+        self.builder.tokenizer.add_tokens(NEW_TOKEN)  # add the temporary token #TOKEN#
+        model.resize_token_embeddings(len(self.builder.tokenizer))  # resize the model to fit the new token
 
         new_queries = []
         queries = []
@@ -118,12 +118,10 @@ class Coercion:
 
         # Print targets (and their ids) and the query (and its id)
         for entry in group:
-            i = 0
-            while True:
-                i = i + 1
-                if ('target' + str(i)) not in entry.keys():
-                    break
+            i = 1
+            while ('target' + str(i)) in entry.keys():
                 print(f'target {i}: {entry["target" + str(i)]}, {entry["target" + str(i) + "_idx"]}')
+                i += 1
             print(f'query: {entry["query"]}, {entry["query_idx"]}')
 
             # We need a Text2TextGeneration here, because mBart is created for translation, originally.
@@ -133,9 +131,15 @@ class Coercion:
             output = self._format(output)
             print(f"output: {output}")
 
+            #
             for j in range(1, i):
+                target_j = entry["target" + str(j)]
+                target_begin = entry["target" + str(j) + "_idx"]
+                # the end of the target sequence is the begin plus the difference of target and query lengths:
+                #target_end = target_begin + (len(target_j.split()) - len(entry["query"].split())) + 1
                 vec_targets.append(
-                    self._get_target_embed((entry["target" + str(j)], entry["target" + str(j) + "_idx"]), model)
+                    # self._get_target_embed((target_j, (target_begin, target_end)), model)
+                    self._get_target_embed((target_j, target_begin), model)
                 )
 
             new_query = entry["query"].split()
@@ -213,10 +217,11 @@ class Coercion:
         labels_and_gather_indexes = [self.builder.encode(target1[0], max_length=max_labels_length)
                                      for target1 in targets1]
         labels = torch.cat([label for label in [lab for lab, _ in labels_and_gather_indexes]], dim=0).to(device)
+
         gather_indexes = [gather_index for gather_index in [g for _, g in labels_and_gather_indexes]]
 
         # target_idx is the index of target word in the token list.
-        target_idxs = [g[q[1] + 1] for g, q in zip(gather_indexes, queries)]
+        target_idxs = [g[q[1] + 1] for g, q in zip(gather_indexes, targets1)]
 
         target_ranges = [range(*i) for i in target_idxs]
         target_lengths = {len(r) for r in target_ranges}
@@ -270,7 +275,6 @@ class Coercion:
                         index=batched_target_idxs.unsqueeze(-1).expand(-1, -1, model.config.d_model)  # d_model == 1024
                     )
 
-                    # TODO shape should have one dimension more??
                     loss = loss_fct(z, batched_vec_targets)
                     loss_bar.n = float(loss)
                     loss_bar.refresh()
@@ -299,6 +303,8 @@ class Coercion:
     def _get_target_embed(self, target, model):
         input_ids, gather_indexes = self.builder.encode(target[0])
         target_idx = gather_indexes[target[1] + 1]
+        # Variant for multi-word targets (if both start and end are given and not only start):
+        # target_idxs = gather_indexes[target[1][0] + 1 : target[1][1] + 1]  # [1][0] start; [1][1] end; +1 <s>
         model.eval()
         with torch.no_grad():
             # Find the learning target x
@@ -306,6 +312,7 @@ class Coercion:
             outputs = model(input_ids=input_ids, output_hidden_states=True)  # labels are shifted right automatically
             # get all indices that are part of the KEE; slice is needed for converting the tuple to a slice
             x_target = outputs.decoder_hidden_states[-1][:, slice(*target_idx)]
+            # x_target = torch.cat([outputs.decoder_hidden_states[-1][:, slice(*target_idx)] for target_idx in target_idxs], dim=1)
         return x_target
 
     def _freeze(self, model):

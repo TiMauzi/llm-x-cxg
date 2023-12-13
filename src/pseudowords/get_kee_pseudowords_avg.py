@@ -259,31 +259,31 @@ class Coercion:
         dataloader = torch.utils.data.DataLoader(list(zip(input_ids, labels, target_idxs, vec_targets)),
                                                  batch_size=self.batch_size)
 
-        with tqdm(total=6, desc="Train Loss", position=2) as loss_bar:
-            for _ in trange(epoch, position=1, desc="Epoch", leave=True):
-                for batched_input_ids, batched_labels, batched_target_idxs, batched_vec_targets in dataloader:
-                    optimizer.zero_grad()
+        # with tqdm(total=6, desc="Train Loss", position=2) as loss_bar:
+        for _ in range(epoch):  # trange(epoch, position=1, desc="Epoch", leave=True):
+            for batched_input_ids, batched_labels, batched_target_idxs, batched_vec_targets in dataloader:
+                optimizer.zero_grad()
 
-                    # "Automatic mixed-precision" (AMP) is faster and helps reducing the workload of the GPU:
-                    # with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=False):  # maybe float16 if bfloat16 doesn't work
-                    # ... this does seem to be buggy, though...
+                # "Automatic mixed-precision" (AMP) is faster and helps reducing the workload of the GPU:
+                # with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=False):  # maybe float16 if bfloat16 doesn't work
+                # ... this does seem to be buggy, though...
 
-                    outputs = model(batched_input_ids, output_hidden_states=True, labels=batched_labels)
+                outputs = model(batched_input_ids, output_hidden_states=True, labels=batched_labels)
 
-                    z = torch.gather(
-                        outputs.decoder_hidden_states[-1], dim=1,
-                        index=batched_target_idxs.unsqueeze(-1).expand(-1, -1, model.config.d_model)  # d_model == 1024
-                    )
+                z = torch.gather(
+                    outputs.decoder_hidden_states[-1], dim=1,
+                    index=batched_target_idxs.unsqueeze(-1).expand(-1, -1, model.config.d_model)  # d_model == 1024
+                )
 
-                    loss = loss_fct(z, batched_vec_targets)
-                    loss_bar.n = float(loss)
-                    loss_bar.refresh()
+                loss = loss_fct(z, batched_vec_targets)
+                # loss_bar.n = float(loss)
+                # loss_bar.refresh()
 
-                    loss.backward()
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                    model.model.encoder.embed_tokens.weight.grad[indices] = 0
-                    optimizer.step()
-                    scheduler.step()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                model.model.encoder.embed_tokens.weight.grad[indices] = 0
+                optimizer.step()
+                scheduler.step()
 
         # get the z* for classification
         vec = model.get_input_embeddings()(token_idxs).squeeze(1)[0]  # this is z*; [0] because all the same

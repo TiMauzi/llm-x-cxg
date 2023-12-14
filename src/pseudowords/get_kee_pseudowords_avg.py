@@ -469,7 +469,7 @@ if __name__ == '__main__':
             # save the pseudowords
             np.save(DIR_OUT + f'pseudowords_comapp_{start}_{end}.npy', result)
 
-            with open(DIR_OUT + f"order_{temp}.txt", "a+") as order_file:
+            with open(DIR_OUT + f"order_{temp}.csv", "a+") as order_file:
                 order_file.write(f"{i};" + group[0]["label"])
 
         except Exception as e:

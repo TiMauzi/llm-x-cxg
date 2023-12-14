@@ -4,6 +4,7 @@ Bert Coercion
 import argparse
 import csv
 import itertools
+import pickle
 import random
 from typing import List, Tuple, TextIO
 
@@ -459,12 +460,16 @@ if __name__ == '__main__':
     for group in tqdm(data[start:end], initial=start, total=len(data),
                       desc="Construction", position=0, leave=True):
         try:
+            print(i, group[0]["label"])
             co.coercion(group)  # , devices)
             print('==' * 40)
             result = get_lowest_loss_arrays(z_list, loss_list)
 
             # save the pseudowords
             np.save(DIR_OUT + f'pseudowords_comapp_{start}_{end}.npy', result)
+
+            with open(f"order_{temp}.txt", "a+") as order_file:
+                pickle.dump(f"{i};" + group[0]["label"], order_file)
         except Exception as e:
             if type(e) != KeyboardInterrupt:
                 print(f"Construction with index {i} threw an error!\n" + e)

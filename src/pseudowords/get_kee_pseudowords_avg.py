@@ -468,7 +468,7 @@ if __name__ == '__main__':
             # save the pseudowords
             np.save(DIR_OUT + f'pseudowords_comapp_{start}_{end}.npy', result)
 
-            with open(f"order_{temp}.txt", "a+") as order_file:
+            with open(DIR_OUT + f"order_{temp}.txt", "a+") as order_file:
                 pickle.dump(f"{i};" + group[0]["label"], order_file)
         except Exception as e:
             if type(e) != KeyboardInterrupt:

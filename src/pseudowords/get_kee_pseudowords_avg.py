@@ -218,10 +218,10 @@ class Coercion:
                                      for target1 in targets1]
         labels = torch.cat([label for label in [lab for lab, _ in labels_and_gather_indexes]], dim=0).to(device)
 
-        gather_indexes = [gather_index for gather_index in [g for _, g in input_ids_and_gather_indexes]]
+        gather_indexes = [gather_index for gather_index in [g for _, g in labels_and_gather_indexes]]
 
         # target_idx is the index of target word in the token list.
-        target_idxs = [g[q[1] + 1] for g, q in zip(gather_indexes, queries)]
+        target_idxs = [g[t[1] + 1] for g, t in zip(gather_indexes, targets1)]
 
         target_ranges = [range(*i) for i in target_idxs]
         target_lengths = {len(r) for r in target_ranges}

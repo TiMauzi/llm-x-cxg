@@ -222,7 +222,7 @@ class Coercion:
         gather_indexes = [gather_index for gather_index in [g for _, g in labels_and_gather_indexes]]
 
         # target_idx is the index of target word in the token list.
-        target_idxs = [g[q[1] + 1] for g, q in zip(gather_indexes, targets1)]
+        target_idxs = [g[t[1] + 1] for g, t in zip(gather_indexes, targets1)]
 
         target_ranges = [range(*i) for i in target_idxs]
         target_lengths = {len(r) for r in target_ranges}
@@ -461,6 +461,7 @@ if __name__ == '__main__':
                       desc="Construction", position=0, leave=True):
         try:
             print(i, group[0]["label"])
+
             co.coercion(group)  # , devices)
             print('==' * 40)
             result = get_lowest_loss_arrays(z_list, loss_list)
@@ -469,10 +470,11 @@ if __name__ == '__main__':
             np.save(DIR_OUT + f'pseudowords_comapp_{start}_{end}.npy', result)
 
             with open(DIR_OUT + f"order_{temp}.txt", "a+") as order_file:
-                pickle.dump(f"{i};" + group[0]["label"], order_file)
+                order_file.write(f"{i};" + group[0]["label"])
+
         except Exception as e:
             if type(e) != KeyboardInterrupt:
-                print(f"Construction with index {i} threw an error!\n" + e)
+                print(f"Construction with index {i} threw an error!\n", e)
         i += 1
 
     result = get_lowest_loss_arrays(z_list, loss_list)

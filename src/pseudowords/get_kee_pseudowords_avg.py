@@ -467,7 +467,7 @@ if __name__ == '__main__':
             np.save(DIR_OUT + f'pseudowords_comapp_{start}_{end}.npy', result)
         except Exception as e:
             if type(e) != KeyboardInterrupt:
-                print(f"Construction with index {i} threw an error!")
+                print(f"Construction with index {i} threw an error!\n" + e)
         i += 1
 
     result = get_lowest_loss_arrays(z_list, loss_list)

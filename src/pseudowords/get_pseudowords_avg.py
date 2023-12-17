@@ -180,7 +180,7 @@ class Coercion:
         target_idxs = [g[q[1] + 1][0] for g, q in zip(gather_indexes, queries)]
         target_idxs = torch.tensor(target_idxs, device="cuda").unsqueeze(-1)
         # token_idx is the index of target word in the vocabulary of BERT
-        token_idxs = input_ids.gather(dim=-1, index=target_idxs)
+        token_idxs = input_ids.gatjher(dim=-1, index=target_idxs)
         vocab_size = len(tokenizer.get_vocab())  # can be checked with tokenizer.get_added_vocab()
         min_token_idx = min(token_idxs)
         indices = torch.tensor([i for i in range(vocab_size) if i < min_token_idx], device="cuda", dtype=torch.long)

@@ -212,7 +212,7 @@ class Coercion:
     def _train(self, model, vec_targets, queries, targets1):
         loss_fct = nn.MSELoss(reduction='mean')  # mean will be computed later
         optimizer = torch.optim.AdamW(model.parameters(), lr=0.005, eps=1e-8)
-        epoch = 20 # 2000 // len(queries)  # 1000 was the default for BERT; but 400 seems to be enough to practically minimize the loss
+        epoch = 2000 // len(queries)  # 1000 was the default for BERT; but 400 seems to be enough to practically minimize the loss
         scheduler = get_linear_schedule_with_warmup(
             optimizer,
             num_warmup_steps=0,
@@ -254,7 +254,7 @@ class Coercion:
             most_common_target_length = max(target_lengths, key=target_occurrences.count)
 
             for i in range(len(target_occurrences)):
-                if len(target_occurrences[i]) != most_common_target_length:
+                if target_occurrences[i] != most_common_target_length:
                     gather_indexes.pop(i-removed)
                     input_ids = torch.cat((input_ids[:i-removed], input_ids[i-removed+1:]))  # equivalent to "pop"
                     input_ids_and_gather_indexes.pop(i - removed)

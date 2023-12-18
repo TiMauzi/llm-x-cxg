@@ -8,7 +8,8 @@ import pickle
 import random
 from typing import List, Tuple, TextIO
 
-from transformers import AutoTokenizer, MBart50Tokenizer, MBartForConditionalGeneration, Text2TextGenerationPipeline
+from transformers import AutoTokenizer, MBart50Tokenizer, MBartForConditionalGeneration, Text2TextGenerationPipeline, \
+    MBart50TokenizerFast
 from transformers import get_linear_schedule_with_warmup
 import torch
 import torch.nn as nn
@@ -64,20 +65,25 @@ class DataBuilder:
     def encode(self, text: str, max_length=None):
         tokens = text.split()
         # Build token indices
-        _, gather_indexes = self._manual_tokenize(tokens)
+        # _, gather_indexes = self._manual_tokenize(tokens)
+        # -> will soon be in encode_dict.word_ids()
         # Tokenization
         if max_length:
             # Note by huggingface:
             #  "We strongly recommend passing in an `attention_mask` since your input_ids may be padded."
             encode_dict = self.tokenizer(
-                text, return_attention_mask=True,
+                tokens, return_attention_mask=True,
                 return_token_type_ids=False, return_tensors='pt',
-                padding='max_length', max_length=max_length)
+                padding='max_length', max_length=max_length, is_split_into_words=True)
         else:
             encode_dict = self.tokenizer(
-                text, return_attention_mask=True,
-                return_token_type_ids=False, return_tensors='pt')
+                tokens, return_attention_mask=True,
+                return_token_type_ids=False, return_tensors='pt', is_split_into_words=True)
         input_ids = encode_dict['input_ids']
+        # list of word ids for each token:
+        gather_indexes = encode_dict.word_ids()
+        gather_indexes = [-1 if w is None else w for w in gather_indexes]
+        gather_indexes = torch.tensor(gather_indexes)
         return input_ids, gather_indexes
 
     def _manual_tokenize(self, tokens: List[str]):
@@ -161,10 +167,17 @@ class Coercion:
             print('Random {a}'.format(a=i))
 
             # Random initialization, same initialization as huggingface
+            # del model
+            # torch.cuda.empty_cache()
+            # model = MBartForConditionalGeneration.from_pretrained("facebook/mbart-large-50",
+            #                                                       return_dict=True)  # load model and save to cuda
+            # model.resize_token_embeddings(len(self.builder.tokenizer))  # resize the model to fit the new token
+            # model.to(device)
             weight = model.model.shared.weight.data[-1]
             nn.init.normal_(weight, mean=0.0, std=model.config.init_std)
 
             model = self._train(model, vec_targets, queries, targets1)
+            model.eval()
 
             print("*************************************************************************")
             print('After training:')
@@ -194,7 +207,7 @@ class Coercion:
     def _train(self, model, vec_targets, queries, targets1):
         loss_fct = nn.MSELoss(reduction='mean')  # mean will be computed later
         optimizer = torch.optim.AdamW(model.parameters(), lr=0.005, eps=1e-8)
-        epoch = 2000 // len(queries)  # 1000 was the default for BERT; but 400 seems to be enough to practically minimize the loss
+        epoch = 5 #2000 // len(queries)  # 1000 was the default for BERT; but 400 seems to be enough to practically minimize the loss
         scheduler = get_linear_schedule_with_warmup(
             optimizer,
             num_warmup_steps=0,
@@ -218,23 +231,25 @@ class Coercion:
                                      for target1 in targets1]
         labels = torch.cat([label for label in [lab for lab, _ in labels_and_gather_indexes]], dim=0).to(device)
 
-        gather_indexes = [gather_index for gather_index in [g for _, g in labels_and_gather_indexes]]
+        gather_indexes = [g for _, g in labels_and_gather_indexes]
 
         # target_idx is the index of target word in the token list.
-        target_idxs = [g[t[1] + 1] for g, t in zip(gather_indexes, targets1)]
+        # get position of #TOKEN# in gather_indexes g as given by the query q[1].
+        # "argmax" gets the position for which this condition holds.
+        target_idxs = [g.eq(t[1]).int().argmax() for g, t in zip(gather_indexes, targets1)]
 
-        target_ranges = [range(*i) for i in target_idxs]
-        target_lengths = {len(r) for r in target_ranges}
+        target_occurrences = [g.eq(q[1]).sum().item() for g, q in zip(gather_indexes, queries)]
+        target_lengths = set(target_occurrences)
 
         removed = 0
         # check if all tokens have the same length (should usually be the case, but not always)
         if len(target_lengths) > 1:
             # TODO The new token has different lengths in different examples. For now, we remove the sentences with "different lengths"...
             # in case there are a few new tokens with different lengths, remove the corresponding sentences
-            most_common_target_length = max({len(r) for r in target_ranges}, key=target_ranges.count)
+            most_common_target_length = max(target_lengths, key=target_occurrences.count)
 
-            for i in range(len(target_ranges)):
-                if len(target_ranges[i]) != most_common_target_length:
+            for i in range(len(target_occurrences)):
+                if len(target_occurrences[i]) != most_common_target_length:
                     gather_indexes.pop(i-removed)
                     input_ids = torch.cat((input_ids[:i-removed], input_ids[i-removed+1:]))  # equivalent to "pop"
                     input_ids_and_gather_indexes.pop(i - removed)
@@ -245,10 +260,10 @@ class Coercion:
                     targets1.pop(i-removed)
                     vec_targets.pop(i-removed)
                     removed += 1
-        target_idxs = torch.tensor([range(*i) for i in target_idxs], device=device)
+        target_idxs = torch.tensor(target_idxs, device=device).unsqueeze(0)
 
         # token_idx is the index of target word in the vocabulary of BERT
-        token_idxs = input_ids.gather(dim=-1, index=target_idxs[:, 0].unsqueeze(-1))
+        token_idxs = labels.gather(dim=-1, index=target_idxs)  # Hint: for CUDA errors: put everything on .cpu() here
         vocab_size = len(tokenizer)  # can be checked with tokenizer.get_added_vocab()
         min_token_idx = min(token_idxs)
         # Get all indices smaller than the new token_idx:
@@ -259,8 +274,10 @@ class Coercion:
         dataloader = torch.utils.data.DataLoader(list(zip(input_ids, labels, target_idxs, vec_targets)),
                                                  batch_size=self.batch_size)
 
+        # model.train()
+
         # with tqdm(total=6, desc="Train Loss", position=2) as loss_bar:
-        for _ in range(epoch):  # trange(epoch, position=1, desc="Epoch", leave=True):
+        for _ in trange(epoch, position=1, desc="Epoch", leave=True, disable=False):
             for batched_input_ids, batched_labels, batched_target_idxs, batched_vec_targets in dataloader:
                 optimizer.zero_grad()
 
@@ -302,16 +319,15 @@ class Coercion:
 
     def _get_target_embed(self, target, model):
         input_ids, gather_indexes = self.builder.encode(target[0])
-        target_idx = gather_indexes[target[1] + 1]
-        # Variant for multi-word targets (if both start and end are given and not only start):
-        # target_idxs = gather_indexes[target[1][0] + 1 : target[1][1] + 1]  # [1][0] start; [1][1] end; +1 <s>
         model.eval()
         with torch.no_grad():
             # Find the learning target x
             input_ids = input_ids.to(device)
             outputs = model(input_ids=input_ids, output_hidden_states=True)  # labels are shifted right automatically
             # get all indices that are part of the KEE; slice is needed for converting the tuple to a slice
-            x_target = outputs.decoder_hidden_states[-1][:, slice(*target_idx)]
+            target_slice = gather_indexes.eq(target[1]).nonzero()
+            target_slice = slice(target_slice.min(), target_slice.max()+1)
+            x_target = outputs.decoder_hidden_states[-1][:, target_slice]
             # x_target = torch.cat([outputs.decoder_hidden_states[-1][:, slice(*target_idx)] for target_idx in target_idxs], dim=1)
         return x_target
 
@@ -443,7 +459,7 @@ if __name__ == '__main__':
     data.sort(key=lambda x: x["label"])  # Grouping doesn't work without sorting first!
     data = [list(group) for _, group in itertools.groupby(data, key=lambda x: x["label"])]
 
-    tokenizer = MBart50Tokenizer.from_pretrained("facebook/mbart-large-50", src_lang="de_DE", tgt_lang="de_DE")
+    tokenizer = MBart50TokenizerFast.from_pretrained("facebook/mbart-large-50", src_lang="de_DE", tgt_lang="de_DE")
     builder = DataBuilder(tokenizer)
     co = Coercion(builder, batch_size)
 
@@ -458,22 +474,22 @@ if __name__ == '__main__':
     i = start
     for group in tqdm(data[start:end], initial=start, total=len(data),
                       desc="Construction", position=0, leave=True):
-        try:
-            print(i, group[0]["label"])
+        #try:
+        print(i, group[0]["label"])
 
-            co.coercion(group)  # , devices)
-            print('==' * 40)
-            result = get_lowest_loss_arrays(z_list, loss_list)
+        co.coercion(group)  # , devices)
+        print('==' * 40)
+        result = get_lowest_loss_arrays(z_list, loss_list)
 
-            # save the pseudowords
-            np.save(DIR_OUT + f'pseudowords_comapp_{start}_{end}.npy', result)
+        # save the pseudowords
+        np.save(DIR_OUT + f'pseudowords_comapp_{start}_{end}.npy', result)
 
-            with open(DIR_OUT + f"order_{temp}.csv", "a+") as order_file:
-                order_file.write(f"{i};" + group[0]["label"] + "\n")
+        with open(DIR_OUT + f"order_{temp}.csv", "a+") as order_file:
+            order_file.write(f"{i};" + group[0]["label"] + "\n")
 
-        except Exception as e:
-            if type(e) != KeyboardInterrupt:
-                print(f"Construction with index {i} threw an error!\n", e)
+        #except Exception as e:
+        #    if type(e) != KeyboardInterrupt:
+        #        print(f"Construction with index {i} threw an error!\n", e)
         i += 1
 
     result = get_lowest_loss_arrays(z_list, loss_list)

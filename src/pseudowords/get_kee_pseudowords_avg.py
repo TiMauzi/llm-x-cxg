@@ -7,6 +7,7 @@ import itertools
 import pickle
 import random
 from typing import List, Tuple, TextIO
+import gc
 
 from transformers import AutoTokenizer, MBart50Tokenizer, MBartForConditionalGeneration, Text2TextGenerationPipeline, \
     MBart50TokenizerFast
@@ -166,18 +167,22 @@ class Coercion:
             print('-' * 40)
             print('Random {a}'.format(a=i))
 
-            # Random initialization, same initialization as huggingface
+            # Reset model
+            # model.cpu()
             # del model
+            # gc.collect()
             # torch.cuda.empty_cache()
             # model = MBartForConditionalGeneration.from_pretrained("facebook/mbart-large-50",
             #                                                       return_dict=True)  # load model and save to cuda
             # model.resize_token_embeddings(len(self.builder.tokenizer))  # resize the model to fit the new token
             # model.to(device)
+            # Random initialization, same initialization as huggingface
             weight = model.model.shared.weight.data[-1]
             nn.init.normal_(weight, mean=0.0, std=model.config.init_std)
 
+            # model.train()
             model = self._train(model, vec_targets, queries, targets1)
-            model.eval()
+            # model.eval()
 
             print("*************************************************************************")
             print('After training:')
@@ -207,7 +212,7 @@ class Coercion:
     def _train(self, model, vec_targets, queries, targets1):
         loss_fct = nn.MSELoss(reduction='mean')  # mean will be computed later
         optimizer = torch.optim.AdamW(model.parameters(), lr=0.005, eps=1e-8)
-        epoch = 5 #2000 // len(queries)  # 1000 was the default for BERT; but 400 seems to be enough to practically minimize the loss
+        epoch = 20 # 2000 // len(queries)  # 1000 was the default for BERT; but 400 seems to be enough to practically minimize the loss
         scheduler = get_linear_schedule_with_warmup(
             optimizer,
             num_warmup_steps=0,
@@ -267,9 +272,9 @@ class Coercion:
         vocab_size = len(tokenizer)  # can be checked with tokenizer.get_added_vocab()
         min_token_idx = min(token_idxs)
         # Get all indices smaller than the new token_idx:
-        indices = torch.tensor([i for i in range(vocab_size) if i < min_token_idx], device=device, dtype=torch.long)
+        indices = torch.tensor([i for i in range(vocab_size) if i < min_token_idx[0]], device=device, dtype=torch.long)
 
-        vec_targets = torch.stack(vec_targets).squeeze(1)
+        vec_targets = torch.stack(vec_targets, dim=2).squeeze(0)  # torch.stack(vec_targets).squeeze(1)
 
         dataloader = torch.utils.data.DataLoader(list(zip(input_ids, labels, target_idxs, vec_targets)),
                                                  batch_size=self.batch_size)
@@ -303,7 +308,7 @@ class Coercion:
                 scheduler.step()
 
         # get the z* for classification
-        vec = model.get_input_embeddings()(token_idxs).squeeze(1)[0]  # this is z*; [0] because all the same
+        vec = model.get_input_embeddings()(token_idxs).squeeze(0)[0]  # this is z*; [0] because all the same
         vec_array = vec.cpu().detach().numpy()
         z_list.append(vec_array)
         loss_list.append(str(loss.cpu().detach().numpy()))

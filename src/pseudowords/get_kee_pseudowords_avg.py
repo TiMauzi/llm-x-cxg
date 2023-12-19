@@ -111,7 +111,7 @@ class Coercion:
         self.builder = builder
         self.batch_size = batch_size
 
-    def coercion(self, group, k: int = 5):
+    def coercion(self, group_no, group, k: int = 5):
         model = MBartForConditionalGeneration.from_pretrained("facebook/mbart-large-50",
                                                               return_dict=True)  # load model and save to cuda
         model.to(device)
@@ -139,25 +139,47 @@ class Coercion:
             output = self._format(output)
             print(f"output: {output}")
 
-            #
-            for j in range(1, i):
-                target_j = entry["target" + str(j)]
-                target_begin = entry["target" + str(j) + "_idx"]
-                # the end of the target sequence is the begin plus the difference of target and query lengths:
-                #target_end = target_begin + (len(target_j.split()) - len(entry["query"].split())) + 1
-                vec_targets.append(
-                    # self._get_target_embed((target_j, (target_begin, target_end)), model)
-                    self._get_target_embed((target_j, target_begin), model)
-                )
+        document_path = "../../out/cache/documents/"
+        try:
+            with open(document_path + "new_queries_" + str(group_no), "rb") as file:
+                new_queries = pickle.load(file)
+            with open(document_path + "queries_" + str(group_no), "rb") as file:
+                queries = pickle.load(file)
+            with open(document_path + "targets1_" + str(group_no), "rb") as file:
+                targets1 = pickle.load(file)
+            with open(document_path + "vec_targets_" + str(group_no), "rb") as file:
+                vec_targets = pickle.load(file)
 
-            new_query = entry["query"].split()
-            new_query[entry["query_idx"]] = NEW_TOKEN
-            new_query = ' '.join(new_query)
-            query = (new_query, entry["query_idx"])
-            print(query)
-            new_queries.append(new_query)
-            queries.append(query)
-            targets1.append((entry["target1"], entry["target1_idx"]))
+        except FileNotFoundError:
+            for entry in group:
+                for j in range(1, i):
+                    target_j = entry["target" + str(j)]
+                    target_begin = entry["target" + str(j) + "_idx"]
+                    # the end of the target sequence is the begin plus the difference of target and query lengths:
+                    #target_end = target_begin + (len(target_j.split()) - len(entry["query"].split())) + 1
+                    vec_targets.append(
+                        # self._get_target_embed((target_j, (target_begin, target_end)), model)
+                        self._get_target_embed((target_j, target_begin), model)
+                    )
+
+                new_query = entry["query"].split()
+                new_query[entry["query_idx"]] = NEW_TOKEN
+                new_query = ' '.join(new_query)
+                query = (new_query, entry["query_idx"])
+                print(query)
+                new_queries.append(new_query)
+                queries.append(query)
+                targets1.append((entry["target1"], entry["target1_idx"]))
+
+            with open(document_path + "new_queries_" + str(group_no), "wb") as file:
+                pickle.dump(new_queries, file)
+            with open(document_path + "queries_" + str(group_no), "wb") as file:
+                pickle.dump(queries, file)
+            with open(document_path + "targets1_" + str(group_no), "wb") as file:
+                pickle.dump(targets1, file)
+            with open(document_path + "vec_targets_" + str(group_no), "wb") as file:
+                pickle.dump(vec_targets, file)
+
 
         model = self._freeze(model)
 
@@ -482,7 +504,7 @@ if __name__ == '__main__':
         #try:
         print(i, group[0]["label"])
 
-        co.coercion(group)  # , devices)
+        co.coercion(i, group)  # , devices)
         print('==' * 40)
         result = get_lowest_loss_arrays(z_list, loss_list)
 

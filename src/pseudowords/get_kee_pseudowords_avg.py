@@ -234,7 +234,7 @@ class Coercion:
     def _train(self, model, vec_targets, queries, targets1):
         loss_fct = nn.MSELoss(reduction='mean')  # mean will be computed later
         optimizer = torch.optim.AdamW(model.parameters(), lr=0.005, eps=1e-8)
-        epoch = 2000 // len(queries)  # 1000 was the default for BERT; but 400 seems to be enough to practically minimize the loss
+        epoch = 5000 // len(queries)  # 1000 was the default for BERT; but 400 may be enough to practically minimize the loss
         scheduler = get_linear_schedule_with_warmup(
             optimizer,
             num_warmup_steps=0,
@@ -333,7 +333,8 @@ class Coercion:
                 scheduler.step()
 
         # get the z* for classification
-        vec = model.get_input_embeddings()(token_idxs).squeeze(0)[0]  # this is z*; [0] because all the same
+        # TODO hier muss (1, 1024) sein:
+        vec = model.model.shared.weight.data[-1]  # == model.model.encoder.embed_tokens.weight.data[-1]  # this is z*
         vec_array = vec.cpu().detach().numpy()
         z_list.append(vec_array)
         loss_list.append(str(loss.cpu().detach().numpy()))

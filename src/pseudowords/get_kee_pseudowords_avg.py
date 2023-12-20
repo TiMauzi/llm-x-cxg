@@ -8,7 +8,11 @@ import pickle
 import random
 from typing import List, Tuple, TextIO
 import gc
+import sys
+import logging
 
+import transformers
+from tokenizers import AddedToken
 from transformers import AutoTokenizer, MBart50Tokenizer, MBartForConditionalGeneration, Text2TextGenerationPipeline, \
     MBart50TokenizerFast
 from transformers import get_linear_schedule_with_warmup
@@ -22,7 +26,17 @@ import json
 import numpy as np
 import os
 
-NEW_TOKEN = '#TOKEN#'
+logging_handlers = [logging.StreamHandler(sys.stdout)]
+logging.basicConfig(
+    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+    datefmt="%m/%d/%Y %H:%M:%S",
+    level=logging.INFO,
+    handlers=logging_handlers
+)
+
+from transformers.convert_slow_tokenizer import MBart50Converter, convert_slow_tokenizer
+
+NEW_TOKEN = AddedToken('#TOKEN#', single_word=False, lstrip=True, rstrip=True, normalized=True)
 
 Item = Tuple[str, int]
 Example = Tuple[Item, Item]
@@ -69,6 +83,7 @@ class DataBuilder:
         # _, gather_indexes = self._manual_tokenize(tokens)
         # -> will soon be in encode_dict.word_ids()
         # Tokenization
+
         if max_length:
             # Note by huggingface:
             #  "We strongly recommend passing in an `attention_mask` since your input_ids may be padded."
@@ -81,7 +96,10 @@ class DataBuilder:
                 tokens, return_attention_mask=True,
                 return_token_type_ids=False, return_tensors='pt', is_split_into_words=True)
         input_ids = encode_dict['input_ids']
-        # list of word ids for each token:
+
+        # The list of word ids for each token is needed. This is only available for "TokenizerFast", so we need to
+        # convert the Tokenizer!
+        # Usually Tokenizer and TokenizerFast are equivalent, but currently they aren't for MBart50...
         gather_indexes = encode_dict.word_ids()
         gather_indexes = [-1 if w is None else w for w in gather_indexes]
         gather_indexes = torch.tensor(gather_indexes)
@@ -132,7 +150,7 @@ class Coercion:
             # We need a Text2TextGeneration here, because mBart is created for translation, originally.
             # Only this way, there can be multiple predicted words for one <mask>.
             nlp = Text2TextGenerationPipeline(model=model, tokenizer=self.builder.tokenizer, device=device)
-            output = nlp("<s> " + entry["query"] + " </s>", max_length=int(len(entry["target1"]) * 1.5), num_return_sequences=5, num_beams=20)#, forced_bos_token_id=tokenizer.lang_code_to_id["de_DE"])
+            output = nlp(entry["query"], max_length=int(len(entry["target1"]) * 1.5), num_return_sequences=5, num_beams=20)
             output = self._format(output)
             print(f"output: {output}")
 
@@ -227,7 +245,7 @@ class Coercion:
                 # print([f'output: {output}, score: {score}'
                 #        for output, score in zip(output_strings, output_probs)])
 
-                outputs = tokenizer("<s> " + new_query + " </s>", return_tensors="pt").to(model.device)
+                outputs = tokenizer(new_query, return_tensors="pt").to(model.device)
                 outputs = model.generate(outputs["input_ids"], max_length=target_length, num_return_sequences=5,
                                          num_beams=20, output_scores=True, return_dict_in_generate=True)
                 output_strings = tokenizer.batch_decode(outputs.sequences, skip_special_tokens=True)
@@ -241,7 +259,7 @@ class Coercion:
     def _train(self, model, vec_targets, queries, targets1):
         loss_fct = nn.MSELoss(reduction='mean')  # mean will be computed later
         optimizer = torch.optim.AdamW(model.parameters(), lr=0.005, eps=1e-8)
-        epoch = 5000 // len(queries)  # 1000 was the default for BERT; but 400 may be enough to practically minimize the loss
+        epoch = 2000 # 5000 // len(queries)  # 1000 was the default for BERT; but 400 may be enough to practically minimize the loss
         scheduler = get_linear_schedule_with_warmup(
             optimizer,
             num_warmup_steps=0,
@@ -302,7 +320,7 @@ class Coercion:
         # token_idx is the index of target word in the vocabulary of BERT
         token_idxs = labels.gather(dim=-1, index=target_idxs)  # Hint: for CUDA errors: put everything on .cpu() here
         vocab_size = len(tokenizer)  # can be checked with tokenizer.get_added_vocab()
-        # Get all indices different than the new token_idx:
+        # Get all indices different to the new token_idx:
         indices = torch.tensor([i for i in range(vocab_size) if i not in token_idxs], device=device, dtype=torch.long)
 
         vec_targets = torch.stack(vec_targets).squeeze(1)
@@ -312,35 +330,33 @@ class Coercion:
 
         # model.train()
 
-        # with tqdm(total=6, desc="Train Loss", position=2) as loss_bar:
-        for _ in trange(epoch, position=1, desc="Epoch", leave=True, disable=True):
-            for batched_input_ids, batched_labels, batched_target_idxs, batched_vec_targets in dataloader:
-                optimizer.zero_grad()
+        with tqdm(total=6, desc="Train Loss", position=2, disable=False) as loss_bar:
+            for _ in trange(epoch, position=1, desc="Epoch", leave=True, disable=False):
+                for batched_input_ids, batched_labels, batched_target_idxs, batched_vec_targets in dataloader:
+                    optimizer.zero_grad()
 
-                # "Automatic mixed-precision" (AMP) is faster and helps reducing the workload of the GPU:
-                # with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=False):  # maybe float16 if bfloat16 doesn't work
-                # ... this does seem to be buggy, though...
+                    # "Automatic mixed-precision" (AMP) is faster and helps reducing the workload of the GPU:
+                    # with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=False):  # maybe float16 if bfloat16 doesn't work
+                    # ... this does seem to be buggy, though...
 
-                outputs = model(batched_input_ids, output_hidden_states=True, labels=batched_labels)
+                    outputs = model(batched_input_ids, output_hidden_states=True, labels=batched_labels)
 
-                z = torch.gather(
-                    outputs.decoder_hidden_states[-1], dim=1,
-                    # batched_target_idxs müsste ggf. mehrere idxs enthalten
-                    index=batched_target_idxs.unsqueeze(-1).expand(-1, -1, model.config.d_model)  # d_model == 1024
-                )
+                    z = torch.gather(
+                        outputs.decoder_hidden_states[-1], dim=1,
+                        index=batched_target_idxs.unsqueeze(-1).expand(-1, -1, model.config.d_model)  # d_model == 1024
+                    )
 
-                loss = loss_fct(z, batched_vec_targets)
-                # loss_bar.n = float(loss)
-                # loss_bar.refresh()
+                    loss = loss_fct(z, batched_vec_targets)
+                    loss_bar.n = float(loss)
+                    loss_bar.refresh()
 
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                model.model.encoder.embed_tokens.weight.grad[indices] = 0
-                optimizer.step()
-                scheduler.step()
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    model.model.encoder.embed_tokens.weight.grad[indices] = 0
+                    optimizer.step()
+                    scheduler.step()
 
         # get the z* for classification
-        # TODO hier muss (1, 1024) sein:
         vec = model.model.shared.weight.data[-1]  # == model.model.encoder.embed_tokens.weight.data[-1]  # this is z*
         vec_array = vec.cpu().detach().numpy()
         z_list.append(vec_array)
@@ -496,7 +512,14 @@ if __name__ == '__main__':
     data.sort(key=lambda x: x["label"])  # Grouping doesn't work without sorting first!
     data = [list(group) for _, group in itertools.groupby(data, key=lambda x: x["label"])]
 
-    tokenizer = MBart50TokenizerFast.from_pretrained("facebook/mbart-large-50", src_lang="de_DE", tgt_lang="de_DE") # MBart50Tokenizer.from_pretrained("facebook/mbart-large-50", src_lang="de_DE", tgt_lang="de_DE")
+    tokenizer = MBart50TokenizerFast.from_pretrained("facebook/mbart-large-50",
+                                                     src_lang="de_DE", tgt_lang="de_DE") # MBart50Tokenizer.from_pretrained("facebook/mbart-large-50", src_lang="de_DE", tgt_lang="de_DE")
+    # bug fix for <mask> token
+    mask_addedtoken = AddedToken('<mask>', single_word=False, lstrip=True, rstrip=True, normalized=True)
+    tokenizer.add_tokens(mask_addedtoken)
+    # converted = convert_slow_tokenizer(tokenizer)
+    # tokenizer = transformers.PreTrainedTokenizerFast(tokenizer_object=converted)
+
 
     builder = DataBuilder(tokenizer)
     co = Coercion(builder, batch_size)

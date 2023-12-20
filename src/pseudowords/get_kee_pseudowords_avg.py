@@ -306,7 +306,7 @@ class Coercion:
         # model.train()
 
         # with tqdm(total=6, desc="Train Loss", position=2) as loss_bar:
-        for _ in trange(epoch, position=1, desc="Epoch", leave=True, disable=False):
+        for _ in trange(epoch, position=1, desc="Epoch", leave=True, disable=True):
             for batched_input_ids, batched_labels, batched_target_idxs, batched_vec_targets in dataloader:
                 optimizer.zero_grad()
 

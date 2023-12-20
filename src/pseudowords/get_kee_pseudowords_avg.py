@@ -234,7 +234,7 @@ class Coercion:
     def _train(self, model, vec_targets, queries, targets1):
         loss_fct = nn.MSELoss(reduction='mean')  # mean will be computed later
         optimizer = torch.optim.AdamW(model.parameters(), lr=0.005, eps=1e-8)
-        epoch = 2000 // len(queries)  # 1000 was the default for BERT; but 400 seems to be enough to practically minimize the loss
+        epoch = 5  # 2000 // len(queries)  # 1000 was the default for BERT; but 400 seems to be enough to practically minimize the loss
         scheduler = get_linear_schedule_with_warmup(
             optimizer,
             num_warmup_steps=0,
@@ -263,7 +263,10 @@ class Coercion:
         # target_idx is the index of target word in the token list.
         # get position of #TOKEN# in gather_indexes g as given by the query q[1].
         # "argmax" gets the position for which this condition holds.
-        target_idxs = [g.eq(t[1]).int().argmax() for g, t in zip(gather_indexes, targets1)]
+        # TODO Hier müssten bei längeren #TOKEN#s jeweils mehrere Indizes rauskommen
+        #  -> Problem: targets1 beinhaltet nur immer ein idx (whitespace-tokenized, nicht nach BART-Tokens!!)
+        #  -> (done?)
+        target_idxs = [torch.nonzero(g.eq(t[1])).squeeze(dim=-1) for g, t in zip(gather_indexes, targets1)]  #[g.eq(t[1]).int().argmax() for g, t in zip(gather_indexes, targets1)]
 
         target_occurrences = [g.eq(q[1]).sum().item() for g, q in zip(gather_indexes, queries)]
         target_lengths = set(target_occurrences)
@@ -287,16 +290,15 @@ class Coercion:
                     targets1.pop(i-removed)
                     vec_targets.pop(i-removed)
                     removed += 1
-        target_idxs = torch.tensor(target_idxs, device=device).unsqueeze(0)
+        target_idxs = torch.stack(target_idxs).to(device)#.unsqueeze(1)  #torch.tensor(target_idxs, device=device).unsqueeze(1)
 
         # token_idx is the index of target word in the vocabulary of BERT
         token_idxs = labels.gather(dim=-1, index=target_idxs)  # Hint: for CUDA errors: put everything on .cpu() here
         vocab_size = len(tokenizer)  # can be checked with tokenizer.get_added_vocab()
-        min_token_idx = min(token_idxs)
-        # Get all indices smaller than the new token_idx:
-        indices = torch.tensor([i for i in range(vocab_size) if i < min_token_idx[0]], device=device, dtype=torch.long)
+        # Get all indices different than the new token_idx:
+        indices = torch.tensor([i for i in range(vocab_size) if i not in token_idxs], device=device, dtype=torch.long)
 
-        vec_targets = torch.stack(vec_targets, dim=2).squeeze(0)  # torch.stack(vec_targets).squeeze(1)
+        vec_targets = torch.stack(vec_targets).squeeze(1)
 
         dataloader = torch.utils.data.DataLoader(list(zip(input_ids, labels, target_idxs, vec_targets)),
                                                  batch_size=self.batch_size)
@@ -316,6 +318,7 @@ class Coercion:
 
                 z = torch.gather(
                     outputs.decoder_hidden_states[-1], dim=1,
+                    # batched_target_idxs müsste ggf. mehrere idxs enthalten
                     index=batched_target_idxs.unsqueeze(-1).expand(-1, -1, model.config.d_model)  # d_model == 1024
                 )
 

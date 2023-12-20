@@ -116,9 +116,6 @@ class Coercion:
                                                               return_dict=True)  # load model and save to cuda
         model.to(device)
 
-        self.builder.tokenizer.add_tokens(NEW_TOKEN)  # add the temporary token #TOKEN#
-        model.resize_token_embeddings(len(self.builder.tokenizer))  # resize the model to fit the new token
-
         new_queries = []
         queries = []
         targets1 = []
@@ -135,9 +132,12 @@ class Coercion:
             # We need a Text2TextGeneration here, because mBart is created for translation, originally.
             # Only this way, there can be multiple predicted words for one <mask>.
             nlp = Text2TextGenerationPipeline(model=model, tokenizer=self.builder.tokenizer, device=device)
-            output = nlp(entry["query"], max_length=30, num_return_sequences=5, num_beams=20)
+            output = nlp("<s> " + entry["query"] + " </s>", max_length=int(len(entry["target1"]) * 1.5), num_return_sequences=5, num_beams=20)#, forced_bos_token_id=tokenizer.lang_code_to_id["de_DE"])
             output = self._format(output)
             print(f"output: {output}")
+
+        self.builder.tokenizer.add_tokens(NEW_TOKEN)  # add the temporary token #TOKEN#
+        model.resize_token_embeddings(len(self.builder.tokenizer))  # resize the model to fit the new token
 
         document_path = "../../out/cache/documents/"
         try:
@@ -218,7 +218,16 @@ class Coercion:
 
                 target_length = len(new_query) - 1 + token_length  # length of new query - #TOKEN# + target token
 
-                outputs = tokenizer(new_query, return_tensors="pt").to(model.device)
+                # nlp = Text2TextGenerationPipeline(model=model, tokenizer=self.builder.tokenizer, device=device)
+                # output = nlp("<s> " + new_query + " </s>", max_length=target_length, num_return_sequences=5,
+                #              num_beams=20, output_scores=True)#, return_dict_in_generate=True)
+                # output_strings = self._format(output)
+                # output_probs = torch.exp(output.sequences_scores)
+                #
+                # print([f'output: {output}, score: {score}'
+                #        for output, score in zip(output_strings, output_probs)])
+
+                outputs = tokenizer("<s> " + new_query + " </s>", return_tensors="pt").to(model.device)
                 outputs = model.generate(outputs["input_ids"], max_length=target_length, num_return_sequences=5,
                                          num_beams=20, output_scores=True, return_dict_in_generate=True)
                 output_strings = tokenizer.batch_decode(outputs.sequences, skip_special_tokens=True)
@@ -226,8 +235,6 @@ class Coercion:
 
                 print([f'output: {output}, score: {score}'
                        for output, score in zip(output_strings, output_probs)])
-
-                outputs_list.append(output_strings)
 
             print("*************************************************************************")
 
@@ -473,7 +480,6 @@ if __name__ == '__main__':
     z_list = []
     z_eps_list = []
     loss_list = []
-    outputs_list = []
 
     temp = args.temp
 
@@ -490,7 +496,8 @@ if __name__ == '__main__':
     data.sort(key=lambda x: x["label"])  # Grouping doesn't work without sorting first!
     data = [list(group) for _, group in itertools.groupby(data, key=lambda x: x["label"])]
 
-    tokenizer = MBart50TokenizerFast.from_pretrained("facebook/mbart-large-50", src_lang="de_DE", tgt_lang="de_DE")
+    tokenizer = MBart50TokenizerFast.from_pretrained("facebook/mbart-large-50", src_lang="de_DE", tgt_lang="de_DE") # MBart50Tokenizer.from_pretrained("facebook/mbart-large-50", src_lang="de_DE", tgt_lang="de_DE")
+
     builder = DataBuilder(tokenizer)
     co = Coercion(builder, batch_size)
 

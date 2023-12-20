@@ -132,6 +132,7 @@ class Coercion:
     def coercion(self, group_no, group, k: int = 5):
         model = MBartForConditionalGeneration.from_pretrained("facebook/mbart-large-50",
                                                               return_dict=True)  # load model and save to cuda
+        #model = nn.DataParallel(model, device_ids=[0,1])
         model.to(device)
 
         new_queries = []

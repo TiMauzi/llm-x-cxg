@@ -32,10 +32,10 @@ Item = Tuple[str, int]
 Example = Tuple[Item, Item]
 
 # ARGS
-QUERIES_PATH = "../../data/pseudowords/CoMaPP_all.json"  # path to queries
-DATASET_PATH = "../../data/pseudowords/CoMapp_Dataset.csv"
+QUERIES_PATH = "../../data/pseudowords/CoMaPP_all_bert.json"  # path to queries
 DIR_OUT = "../../out/"  # path to dir to save the pseudowords
 CACHE = "../../out/cache/"  # path to cach directory
+DOC_PATH = "../../out/cache/documents/"
 
 device = "cuda"
 
@@ -120,8 +120,6 @@ class Coercion:
         # Print targets (and their id's) and the query (and its id)
         for entry in group:
             i = 1
-            # TODO Hier Unterteilung von <mask> in mehrere [MASK]!
-            entry["query"] = entry["query"].replace("<mask>", "[MASK]")  # replace <mask> by [MASK] for BERT
 
             while ('target' + str(i)) in entry.keys():
                 print(f'target {i}: {entry["target" + str(i)]}, {entry["target" + str(i) + "_idx"]}')
@@ -137,15 +135,12 @@ class Coercion:
         self.builder.tokenizer.add_tokens(NEW_TOKEN)  # add the temporary token #TOKEN#
         model.resize_token_embeddings(len(self.builder.tokenizer))  # resize the model to fit the new token
 
-        document_path = "../../out/cache/documents/"
         try:
-            with open(document_path + "new_queries_" + str(group_no), "rb") as file:
+            with open(DOC_PATH + "new_queries_bert_" + str(group_no), "rb") as file:
                 new_queries = pickle.load(file)
-            with open(document_path + "queries_" + str(group_no), "rb") as file:
+            with open(DOC_PATH + "queries_bert_" + str(group_no), "rb") as file:
                 queries = pickle.load(file)
-            with open(document_path + "targets1_" + str(group_no), "rb") as file:
-                targets1 = pickle.load(file)
-            with open(document_path + "vec_targets_" + str(group_no), "rb") as file:
+            with open(DOC_PATH + "vec_targets_bert_" + str(group_no), "rb") as file:
                 vec_targets = pickle.load(file)
 
         except FileNotFoundError:
@@ -163,11 +158,11 @@ class Coercion:
                 new_queries.append(new_query)
                 queries.append(query)
 
-            with open(document_path + "new_queries_" + str(group_no), "wb") as file:
+            with open(DOC_PATH + "new_queries_bert_" + str(group_no), "wb") as file:
                 pickle.dump(new_queries, file)
-            with open(document_path + "queries_" + str(group_no), "wb") as file:
+            with open(DOC_PATH + "queries_bert_" + str(group_no), "wb") as file:
                 pickle.dump(queries, file)
-            with open(document_path + "vec_targets_" + str(group_no), "wb") as file:
+            with open(DOC_PATH + "vec_targets_bert_" + str(group_no), "wb") as file:
                 pickle.dump(vec_targets, file)
 
         model = self._freeze(model)
@@ -201,14 +196,14 @@ class Coercion:
     def _train(self, model, vec_targets, queries):
         loss_fct = nn.MSELoss(reduction='mean')  # mean will be computed later
         optimizer = torch.optim.AdamW(model.parameters(), lr=0.3, eps=1e-8)
-        epoch = 100
+        epoch = 2000 // len(queries)
         scheduler = get_linear_schedule_with_warmup(
             optimizer,
             num_warmup_steps=0,
             num_training_steps=epoch)
 
         # TODO Why is it different from get_kee_pseudowords_avg?
-        max_length = 1 + max([len(self.builder.encode(query[0])[1]) for query in queries])  # possible padding
+        max_length = max([self.builder.encode(query[0])[0].shape[1] for query in queries])  # 1 + max([len(self.builder.encode(query[0])[1]) for query in queries])  # possible padding
         input_ids_and_gather_indexes = [self.builder.encode(query[0], max_length=max_length) for query in queries]
         input_ids = torch.cat([input_id for input_id in [i for i, _ in input_ids_and_gather_indexes]], dim=0).to("cuda")
         gather_indexes = [gather_index for gather_index in [g for _, g in input_ids_and_gather_indexes]]
@@ -222,12 +217,11 @@ class Coercion:
         min_token_idx = min(token_idxs)
         indices = torch.tensor([i for i in range(vocab_size) if i < min_token_idx], device="cuda", dtype=torch.long)
 
-        vec_arrays = []
-
-        dataloader = torch.utils.data.DataLoader(list(zip(input_ids, target_idxs, vec_targets)),
-                                                 batch_size=self.batch_size)
+        # dataloader = torch.utils.data.DataLoader(list(zip(input_ids, target_idxs, vec_targets)),
+        #                                          batch_size=self.batch_size)
 
         for _ in trange(epoch):
+            model.to(device)
             optimizer.zero_grad()
             outputs = model(input_ids, output_hidden_states=True)
             z = torch.index_select(outputs.hidden_states[12][0], dim=0, index=target_idxs.squeeze(-1))
@@ -240,10 +234,6 @@ class Coercion:
             optimizer.step()
             scheduler.step()
 
-            # try to fix the feed-forward bug
-            outputs = model(input_ids, output_hidden_states=True)
-            bert_z = torch.index_select(outputs.hidden_states[12][0], dim=0, index=target_idxs.squeeze(-1))
-
         # get the z* for classification
         vec = model.bert.embeddings.word_embeddings(token_idxs).squeeze(1)[0]  # this is z*; [0] because all the same
         vec_array = vec.cpu().detach().numpy()
@@ -251,8 +241,8 @@ class Coercion:
         loss_list.append(str(loss.cpu().detach().numpy()))
 
         # save checkpoints
-        np.save(CACHE + f"temp_z_arrays_mbart_{temp}.npy", np.array(z_list))
-        np.save(CACHE + f"temp_loss_arrays_mbart_{temp}.npy", np.array(loss_list))
+        np.save(CACHE + f"temp_z_arrays_bert_{temp}.npy", np.array(z_list))
+        np.save(CACHE + f"temp_loss_arrays_bert_{temp}.npy", np.array(loss_list))
 
         s = 'Final loss={a}'.format(a=str(loss.cpu().detach().numpy()))
         print(s)
@@ -391,10 +381,10 @@ if __name__ == '__main__':
     temp = args.temp
 
     # load checkpoints if available
-    if os.path.isfile(CACHE + f"temp_z_arrays_mbart_{temp}.npy"):
-        z_list = np.load(CACHE + f"temp_z_arrays_mbart_{temp}.npy").tolist()
-    if os.path.isfile(CACHE + f"temp_loss_arrays_mbart_{temp}.npy"):
-        loss_list = np.load(CACHE + f"temp_loss_arrays_mbart_{temp}.npy").tolist()
+    if os.path.isfile(CACHE + f"temp_z_arrays_bert_{temp}.npy"):
+        z_list = np.load(CACHE + f"temp_z_arrays_bert_{temp}.npy").tolist()
+    if os.path.isfile(CACHE + f"temp_loss_arrays_bert_{temp}.npy"):
+        loss_list = np.load(CACHE + f"temp_loss_arrays_bert_{temp}.npy").tolist()
 
     with open(QUERIES_PATH) as json_file:
         data = json.load(json_file)
@@ -421,12 +411,12 @@ if __name__ == '__main__':
         result = get_lowest_loss_arrays(z_list, loss_list)
 
         # save the pseudowords
-        np.save(DIR_OUT + f'pseudowords_comapp_{start}_{end}.npy', result)
+        np.save(DIR_OUT + f'pseudowords_comapp_bert_{start}_{end}.npy', result)
 
-        with open(DIR_OUT + f"order_{temp}.csv", "a+") as order_file:
+        with open(DIR_OUT + f"order_bert_{temp}.csv", "a+") as order_file:
             order_file.write(f"{i};" + group[0]["label"] + "\n")
 
         i += 1
 
     result = get_lowest_loss_arrays(z_list, loss_list)
-    np.save(DIR_OUT + f'pseudowords_comapp_{start}_{end}.npy', result)
+    np.save(DIR_OUT + f'pseudowords_comapp_bert_{start}_{end}.npy', result)

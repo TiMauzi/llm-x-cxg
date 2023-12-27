@@ -221,7 +221,7 @@ class Coercion:
         #                                          batch_size=self.batch_size)
 
         with tqdm(total=6, desc="Train Loss", position=2, disable=True) as loss_bar:
-            for _ in trange(epoch, position=1, desc="Epoch", leave=True, disable=True):
+            for _ in trange(epoch, position=1, desc="Epoch", leave=True, disable=False):
                 model.to(device)
                 optimizer.zero_grad()
                 outputs = model(input_ids, output_hidden_states=True)

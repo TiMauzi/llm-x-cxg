@@ -6,21 +6,13 @@
 #SBATCH --mail-user=tim.sockel@campus.lmu.de
 #SBATCH --chdir=/home/s/sockel/Desktop/llm-x-cxg/src/pseudowords
 #SBATCH --output=/home/s/sockel/Desktop/llm-x-cxg/out/slurm.%A.%a.%j.%N.out
-#SBATCH --array=1-15  # Set the number of tasks as an array
+#SBATCH --array=1-15
 
-# Calculate total_tasks using a subshell and Python
-total_tasks=$(python -c "import itertools
-import json
-with open('../../data/pseudowords/CoMaPP_all.json') as json_file:
-    data = json.load(json_file)
-data.sort(key=lambda x: x['label'])
-data = [list(group) for _, group in itertools.groupby(data, key=lambda x: x['label'])]
-print(len(data))")
+total_tasks=${SLURM_ARRAY_TASK_COUNT}
 
-# Print total_tasks to the output file
-echo "Total Tasks: $total_tasks"
+task_range=$((562 / total_tasks))
 
-python3 -u par_get_kee_pseudowords_avg.py --task_id $SLURM_ARRAY_TASK_ID
+start=$((($SLURM_ARRAY_TASK_ID - 1) * task_range))
+end=$((($SLURM_ARRAY_TASK_ID * task_range)))
 
-# Wait for the task to complete
-wait
+python3 -u get_bert_kee_pseudowords_avg.py --device="cuda" --start=$start --end=$end 2>&1 | tee -a ../../out/cache/log$SLURM_ARRAY_TASK_ID.txt

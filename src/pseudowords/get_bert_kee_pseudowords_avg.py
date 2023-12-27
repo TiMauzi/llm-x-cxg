@@ -196,7 +196,7 @@ class Coercion:
     def _train(self, model, vec_targets, queries):
         loss_fct = nn.MSELoss(reduction='mean')  # mean will be computed later
         optimizer = torch.optim.AdamW(model.parameters(), lr=0.3, eps=1e-8)
-        epoch = 2000 // len(queries)
+        epoch = 5000 // len(queries)
         scheduler = get_linear_schedule_with_warmup(
             optimizer,
             num_warmup_steps=0,
@@ -220,19 +220,23 @@ class Coercion:
         # dataloader = torch.utils.data.DataLoader(list(zip(input_ids, target_idxs, vec_targets)),
         #                                          batch_size=self.batch_size)
 
-        for _ in trange(epoch):
-            model.to(device)
-            optimizer.zero_grad()
-            outputs = model(input_ids, output_hidden_states=True)
-            z = torch.index_select(outputs.hidden_states[12][0], dim=0, index=target_idxs.squeeze(-1))
+        with tqdm(total=6, desc="Train Loss", position=2, disable=True) as loss_bar:
+            for _ in trange(epoch, position=1, desc="Epoch", leave=True, disable=True):
+                model.to(device)
+                optimizer.zero_grad()
+                outputs = model(input_ids, output_hidden_states=True)
+                z = torch.index_select(outputs.hidden_states[12][0], dim=0, index=target_idxs.squeeze(-1))
 
-            loss = loss_fct(z, torch.stack(vec_targets))
+                loss = loss_fct(z, torch.stack(vec_targets))
 
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            model.bert.embeddings.word_embeddings.weight.grad[indices] = 0
-            optimizer.step()
-            scheduler.step()
+                loss_bar.n = float(loss)
+                loss_bar.refresh()
+
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                model.bert.embeddings.word_embeddings.weight.grad[indices] = 0
+                optimizer.step()
+                scheduler.step()
 
         # get the z* for classification
         vec = model.bert.embeddings.word_embeddings(token_idxs).squeeze(1)[0]  # this is z*; [0] because all the same

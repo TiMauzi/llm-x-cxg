@@ -12,7 +12,7 @@ total_tasks=${SLURM_ARRAY_TASK_COUNT}
 
 task_range=$((562 / total_tasks))
 
-start=$((($SLURM_ARRAY_TASK_ID - 1) * task_range))
-end=$((($SLURM_ARRAY_TASK_ID * task_range)))
+start=$(((${SLURM_ARRAY_TASK_ID} - 1) * task_range))
+end=$(((${SLURM_ARRAY_TASK_ID} * task_range)))
 
-python3 -u get_bert_kee_pseudowords_avg.py --device="cuda" --start=$start --end=$end 2>&1 | tee -a ../../out/cache/log$SLURM_ARRAY_TASK_ID.txt
+python3 -u get_bert_kee_pseudowords_avg.py --device="cuda" --start=$start --end=$end --temp=${SLURM_ARRAY_TASK_ID} 2>&1 | tee -a ../../out/cache/log${SLURM_ARRAY_TASK_ID}.txt

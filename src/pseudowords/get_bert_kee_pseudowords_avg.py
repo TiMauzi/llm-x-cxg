@@ -218,14 +218,13 @@ class Coercion:
     def _train(self, model, vec_targets, queries):
         loss_fct = nn.MSELoss(reduction='mean')  # mean will be computed later
         optimizer = torch.optim.AdamW(model.parameters(), lr=0.3, eps=1e-8)
-        epoch = 100 // len(queries)
+        epoch = 10000 // len(queries)
         scheduler = get_linear_schedule_with_warmup(
             optimizer,
             num_warmup_steps=0,
             num_training_steps=epoch)
 
-        # TODO Why is it different from get_kee_pseudowords_avg?
-        max_length = 1 + max([self.builder.encode(query[0])[0].shape[1] for query in queries])  # 1 + max([len(self.builder.encode(query[0])[1]) for query in queries])  # possible padding
+        max_length = max([self.builder.encode(query[0])[0].shape[1] for query in queries])
         input_ids_and_gather_indexes = [self.builder.encode(query[0], max_length=max_length) for query in queries]
         input_ids = torch.cat([input_id for input_id in [i for i, _ in input_ids_and_gather_indexes]], dim=0).to("cuda")
         gather_indexes = [gather_index for gather_index in [g for _, g in input_ids_and_gather_indexes]]

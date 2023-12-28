@@ -25,6 +25,9 @@ from sklearn.metrics.pairwise import cosine_similarity
 from scipy import spatial
 from sklearn.metrics import mean_squared_error
 import pickle
+import nltk
+nltk.download("punkt")
+from nltk.tokenize import word_tokenize
 
 NEW_TOKEN = '#TOKEN#'
 
@@ -68,7 +71,9 @@ class DataBuilder:
         self.tokenizer = tokenizer
 
     def encode(self, text: str, max_length=None):
-        tokens = text.split()
+        tokens = word_tokenize(text)
+        if '[MASK]' in text:
+            tokens = rejoin_mask(tokens)
         # Build token indices
         _, gather_indexes = self._manual_tokenize(tokens)
         # Tokenization
@@ -103,6 +108,16 @@ class DataBuilder:
         return split_tokens, indices
 
 
+def rejoin_mask(new_query):
+    start_index = new_query.index('[')
+    mask_index = new_query.index('MASK')
+    end_index = new_query.index(']')
+    assert start_index + 1 == mask_index and mask_index + 1 == end_index
+    # Join '[', 'MASK', and ']' to '[MASK]'
+    new_query[start_index:end_index + 1] = [''.join(new_query[start_index:end_index + 1])]
+    return new_query
+
+
 class Coercion:
     def __init__(self, builder: DataBuilder, batch_size: int = 8):
         self.builder = builder
@@ -121,9 +136,11 @@ class Coercion:
         for entry in group:
             i = 1
 
-            while ('target' + str(i)) in entry.keys():
-                print(f'target {i}: {entry["target" + str(i)]}, {entry["target" + str(i) + "_idx"]}')
-                i += 1
+            # Make sure there are no tokenization mismatches between target and query:
+            entry["target1"] = " ".join(word_tokenize(entry["target1"])).replace("``", '"')
+            entry["query"] = " ".join(rejoin_mask(word_tokenize(entry["query"]))).replace("``", '"')
+
+            print(f'target1: {entry["target1"]}, {entry["target1_idx"]}')
             print(f'query: {entry["query"]}, {entry["query_idx"]}')
 
             # Model output
@@ -146,11 +163,11 @@ class Coercion:
         except FileNotFoundError:
             for entry in group:
 
-                for j in range(1, i):
-                    vec_targets.append(
-                        self._get_target_embed((entry["target" + str(j)], entry["target" + str(j) + "_idx"]), model))
+                vec_targets.append(
+                    self._get_target_embed((entry["target1"], entry["target1_idx"]), model)
+                )
 
-                new_query = entry["query"].split()
+                new_query = entry["query"].split()  # no new word tokenization necessary, since this happened before
                 new_query[entry["query_idx"]] = NEW_TOKEN
                 new_query = ' '.join(new_query)
                 query = (new_query, entry["query_idx"])
@@ -217,26 +234,29 @@ class Coercion:
         min_token_idx = min(token_idxs)
         indices = torch.tensor([i for i in range(vocab_size) if i < min_token_idx], device="cuda", dtype=torch.long)
 
-        # dataloader = torch.utils.data.DataLoader(list(zip(input_ids, target_idxs, vec_targets)),
-        #                                          batch_size=self.batch_size)
+        vec_targets = torch.stack(vec_targets)
+
+        dataloader = torch.utils.data.DataLoader(list(zip(input_ids, target_idxs, vec_targets)),
+                                                 batch_size=self.batch_size)
 
         with tqdm(total=6, desc="Train Loss", position=2, disable=True) as loss_bar:
             for _ in trange(epoch, position=1, desc="Epoch", leave=True, disable=False):
-                model.to(device)
-                optimizer.zero_grad()
-                outputs = model(input_ids, output_hidden_states=True)
-                z = torch.index_select(outputs.hidden_states[12][0], dim=0, index=target_idxs.squeeze(-1))
+                for batched_input_ids, batched_target_idxs, batched_vec_targets in dataloader:
+                    model.to(device)
+                    optimizer.zero_grad()
+                    outputs = model(batched_input_ids, output_hidden_states=True)
+                    z = torch.index_select(outputs.hidden_states[12][0], dim=0, index=batched_target_idxs.squeeze(-1))
 
-                loss = loss_fct(z, torch.stack(vec_targets))
+                    loss = loss_fct(z, batched_vec_targets)
 
-                loss_bar.n = float(loss)
-                loss_bar.refresh()
+                    loss_bar.n = float(loss)
+                    loss_bar.refresh()
 
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                model.bert.embeddings.word_embeddings.weight.grad[indices] = 0
-                optimizer.step()
-                scheduler.step()
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    model.bert.embeddings.word_embeddings.weight.grad[indices] = 0
+                    optimizer.step()
+                    scheduler.step()
 
         # get the z* for classification
         vec = model.bert.embeddings.word_embeddings(token_idxs).squeeze(1)[0]  # this is z*; [0] because all the same

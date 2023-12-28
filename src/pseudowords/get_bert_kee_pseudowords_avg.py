@@ -71,9 +71,10 @@ class DataBuilder:
         self.tokenizer = tokenizer
 
     def encode(self, text: str, max_length=None):
-        tokens = word_tokenize(text)
-        if '[MASK]' in text:
-            tokens = rejoin_mask(tokens)
+        tokens = text.split()
+        #tokens = word_tokenize(text)
+        #if '[MASK]' in text:
+        #    tokens = rejoin_mask(tokens)
         # Build token indices
         _, gather_indexes = self._manual_tokenize(tokens)
         # Tokenization
@@ -137,8 +138,8 @@ class Coercion:
             i = 1
 
             # Make sure there are no tokenization mismatches between target and query:
-            entry["target1"] = " ".join(word_tokenize(entry["target1"])).replace("``", '"')
-            entry["query"] = " ".join(rejoin_mask(word_tokenize(entry["query"]))).replace("``", '"')
+            #entry["target1"] = " ".join(word_tokenize(entry["target1"])).replace("``", '"')
+            #entry["query"] = " ".join(rejoin_mask(word_tokenize(entry["query"]))).replace("``", '"')
 
             print(f'target1: {entry["target1"]}, {entry["target1_idx"]}')
             print(f'query: {entry["query"]}, {entry["query_idx"]}')
@@ -167,7 +168,9 @@ class Coercion:
                     self._get_target_embed((entry["target1"], entry["target1_idx"]), model)
                 )
 
-                new_query = entry["query"].split()  # no new word tokenization necessary, since this happened before
+                # make sure
+                #new_query = " ".join(rejoin_mask(word_tokenize(entry["query"]))).replace("``", '"').split()
+                new_query = entry["query"].split()
                 new_query[entry["query_idx"]] = NEW_TOKEN
                 new_query = ' '.join(new_query)
                 query = (new_query, entry["query_idx"])

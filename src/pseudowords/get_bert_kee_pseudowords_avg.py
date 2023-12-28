@@ -230,20 +230,19 @@ class Coercion:
         gather_indexes = [gather_index for gather_index in [g for _, g in input_ids_and_gather_indexes]]
 
         # target_idx is the index of target word in the token list.
-        target_idxs = [g[q[1] + 1][0] for g, q in zip(gather_indexes, queries)]
+        target_idxs = [g[q[1]][0] for g, q in zip(gather_indexes, queries)]
         target_idxs = torch.tensor(target_idxs, device="cuda").unsqueeze(-1)
         # token_idx is the index of target word in the vocabulary of BERT
         token_idxs = input_ids.gather(dim=-1, index=target_idxs)
         vocab_size = len(tokenizer.get_vocab())  # can be checked with tokenizer.get_added_vocab()
-        min_token_idx = min(token_idxs)
-        indices = torch.tensor([i for i in range(vocab_size) if i < min_token_idx], device="cuda", dtype=torch.long)
+        indices = torch.tensor([i for i in range(vocab_size) if i not in token_idxs], device="cuda", dtype=torch.long)
 
         vec_targets = torch.stack(vec_targets)
 
         dataloader = torch.utils.data.DataLoader(list(zip(input_ids, target_idxs, vec_targets)),
                                                  batch_size=self.batch_size)
 
-        with tqdm(total=6, desc="Train Loss", position=2, disable=True) as loss_bar:
+        with tqdm(total=6, desc="Train Loss", position=2, disable=False) as loss_bar:
             for _ in trange(epoch, position=1, desc="Epoch", leave=True, disable=False):
                 for batched_input_ids, batched_target_idxs, batched_vec_targets in dataloader:
                     model.to(device)

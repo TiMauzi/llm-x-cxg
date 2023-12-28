@@ -168,15 +168,16 @@ class Coercion:
                     self._get_target_embed((entry["target1"], entry["target1_idx"]), model)
                 )
 
-                # make sure
-                #new_query = " ".join(rejoin_mask(word_tokenize(entry["query"]))).replace("``", '"').split()
                 new_query = entry["query"].split()
-                new_query[entry["query_idx"]] = NEW_TOKEN
-                new_query = ' '.join(new_query)
-                query = (new_query, entry["query_idx"])
-                print(query)
-                new_queries.append(new_query)
-                queries.append(query)
+                if new_query[entry["query_idx"]] == "[MASK]":
+                    continue  # don't let #TOKEN# and [MASK] overlap
+                else:
+                    new_query[entry["query_idx"]] = NEW_TOKEN
+                    new_query = ' '.join(new_query)
+                    query = (new_query, entry["query_idx"])
+                    print(query)
+                    new_queries.append(new_query)
+                    queries.append(query)
 
             with open(DOC_PATH + "new_queries_bert_" + str(group_no), "wb") as file:
                 pickle.dump(new_queries, file)
@@ -202,8 +203,9 @@ class Coercion:
             print("*************************************************************************")
             print('After training:')
             nlp = FillMaskPipeline(model, self.builder.tokenizer, device=0)
-            for new_query in set(new_queries):  # only view different queries
+            for new_query, query in set(zip(new_queries, queries)):  # only view different queries
                 print("query: " + new_query)
+                assert "[MASK]" in new_query
                 output = nlp(new_query)
                 output = self._format(output)
                 print('[MASK]=' + str(output))
@@ -216,7 +218,7 @@ class Coercion:
     def _train(self, model, vec_targets, queries):
         loss_fct = nn.MSELoss(reduction='mean')  # mean will be computed later
         optimizer = torch.optim.AdamW(model.parameters(), lr=0.3, eps=1e-8)
-        epoch = 10000 // len(queries)
+        epoch = 100 // len(queries)
         scheduler = get_linear_schedule_with_warmup(
             optimizer,
             num_warmup_steps=0,

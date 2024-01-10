@@ -40,7 +40,7 @@ DIR_OUT = "../../out/"  # path to dir to save the pseudowords
 CACHE = "../../out/cache/"  # path to cach directory
 DOC_PATH = "../../out/cache/documents/"
 
-device = "cuda"
+device = "cuda:0"
 
 
 ################################################
@@ -130,13 +130,10 @@ class Coercion:
 
         new_queries = []
         queries = []
-        targets1 = []
         vec_targets = []
 
         # Print targets (and their id's) and the query (and its id)
         for entry in group:
-            i = 1
-
             # Make sure there are no tokenization mismatches between target and query:
             #entry["target1"] = " ".join(word_tokenize(entry["target1"])).replace("``", '"')
             #entry["query"] = " ".join(rejoin_mask(word_tokenize(entry["query"]))).replace("``", '"')
@@ -226,16 +223,16 @@ class Coercion:
 
         max_length = max([self.builder.encode(query[0])[0].shape[1] for query in queries])
         input_ids_and_gather_indexes = [self.builder.encode(query[0], max_length=max_length) for query in queries]
-        input_ids = torch.cat([input_id for input_id in [i for i, _ in input_ids_and_gather_indexes]], dim=0).to("cuda")
+        input_ids = torch.cat([input_id for input_id in [i for i, _ in input_ids_and_gather_indexes]], dim=0).to(device)
         gather_indexes = [gather_index for gather_index in [g for _, g in input_ids_and_gather_indexes]]
 
-        # target_idx is the index of target word in the token list.
-        target_idxs = [g[q[1]][0] for g, q in zip(gather_indexes, queries)]
-        target_idxs = torch.tensor(target_idxs, device="cuda").unsqueeze(-1)
-        # token_idx is the index of target word in the vocabulary of BERT
+        # target_idx is the index of target word in the token list. (+1 due to [CLS] token)
+        target_idxs = [g[q[1]][0]+1 for g, q in zip(gather_indexes, queries)]
+        target_idxs = torch.tensor(target_idxs, device=device).unsqueeze(-1)
+        # token_idx is the index of target token in the vocabulary of BERT
         token_idxs = input_ids.gather(dim=-1, index=target_idxs)
         vocab_size = len(tokenizer.get_vocab())  # can be checked with tokenizer.get_added_vocab()
-        indices = torch.tensor([i for i in range(vocab_size) if i not in token_idxs], device="cuda", dtype=torch.long)
+        indices = torch.tensor([i for i in range(vocab_size) if i not in token_idxs], device=device, dtype=torch.long)
 
         vec_targets = torch.stack(vec_targets)
 
@@ -282,7 +279,7 @@ class Coercion:
         model.eval()
         with torch.no_grad():
             # Find the learning target x
-            input_ids = input_ids.to('cuda')
+            input_ids = input_ids.to(device)
             outputs = model(input_ids, output_hidden_states=True)
             x_target = outputs.hidden_states[12][0][target_idx]
         return x_target
@@ -320,7 +317,7 @@ class Coercion:
         input_ids, gather_indexes = self.builder.encode(query[0])
         # target_idx is the index of target word in the token list.
         target_idx = gather_indexes[query[1] + 1][0]
-        input_ids = input_ids.to('cuda')
+        input_ids = input_ids.to(device)
         outputs = model(input_ids)
         with torch.no_grad():
             logits = outputs.logits[0, target_idx, :]

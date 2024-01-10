@@ -36,7 +36,7 @@ logging.basicConfig(
 
 from transformers.convert_slow_tokenizer import MBart50Converter, convert_slow_tokenizer
 
-NEW_TOKEN = AddedToken('#TOKEN#', single_word=False, lstrip=True, rstrip=True, normalized=True)
+NEW_TOKEN = "#TOKEN#"  # AddedToken('#TOKEN#', single_word=False, lstrip=True, rstrip=True, normalized=True)
 
 Item = Tuple[str, int]
 Example = Tuple[Item, Item]
@@ -132,7 +132,6 @@ class Coercion:
     def coercion(self, group_no, group, k: int = 5):
         model = MBartForConditionalGeneration.from_pretrained("facebook/mbart-large-50",
                                                               return_dict=True)  # load model and save to cuda
-        #model = nn.DataParallel(model, device_ids=[0,1])
         model.to(device)
 
         new_queries = []
@@ -142,10 +141,7 @@ class Coercion:
 
         # Print targets (and their ids) and the query (and its id)
         for entry in group:
-            i = 1
-            while ('target' + str(i)) in entry.keys():
-                print(f'target {i}: {entry["target" + str(i)]}, {entry["target" + str(i) + "_idx"]}')
-                i += 1
+            print(f'target1: {entry["target1"]}, {entry["target1_idx"]}')
             print(f'query: {entry["query"]}, {entry["query_idx"]}')
 
             # We need a Text2TextGeneration here, because mBart is created for translation, originally.
@@ -171,24 +167,24 @@ class Coercion:
 
         except FileNotFoundError:
             for entry in group:
-                for j in range(1, i):
-                    target_j = entry["target" + str(j)]
-                    target_begin = entry["target" + str(j) + "_idx"]
-                    # the end of the target sequence is the begin plus the difference of target and query lengths:
-                    #target_end = target_begin + (len(target_j.split()) - len(entry["query"].split())) + 1
-                    vec_targets.append(
-                        # self._get_target_embed((target_j, (target_begin, target_end)), model)
-                        self._get_target_embed((target_j, target_begin), model)
-                    )
+                # the end of the target sequence is the begin plus the difference of target and query lengths:
+                #target_end = entry["target1_idx"] + (len(target_j.split()) - len(entry["query"].split())) + 1
+                vec_targets.append(
+                    # self._get_target_embed((target_j, (target_begin, target_end)), model)
+                    self._get_target_embed((entry["target1"], entry["target1_idx"]), model)
+                )
 
                 new_query = entry["query"].split()
-                new_query[entry["query_idx"]] = NEW_TOKEN
-                new_query = ' '.join(new_query)
-                query = (new_query, entry["query_idx"])
-                print(query)
-                new_queries.append(new_query)
-                queries.append(query)
-                targets1.append((entry["target1"], entry["target1_idx"]))
+                if new_query[entry["query_idx"]] == "[MASK]":
+                    continue  # don't let #TOKEN# and [MASK] overlap
+                else:
+                    new_query[entry["query_idx"]] = NEW_TOKEN
+                    new_query = ' '.join(new_query)
+                    query = (new_query, entry["query_idx"])
+                    print(query)
+                    new_queries.append(new_query)
+                    queries.append(query)
+                    targets1.append((entry["target1"], entry["target1_idx"]))
 
             with open(document_path + "new_queries_" + str(group_no), "wb") as file:
                 pickle.dump(new_queries, file)
@@ -260,7 +256,7 @@ class Coercion:
     def _train(self, model, vec_targets, queries, targets1):
         loss_fct = nn.MSELoss(reduction='mean')  # mean will be computed later
         optimizer = torch.optim.AdamW(model.parameters(), lr=0.005, eps=1e-8)
-        epoch = 2000 # 5000 // len(queries)  # 1000 was the default for BERT; but 400 may be enough to practically minimize the loss
+        epoch = 5000 // len(queries)  # 1000==5000//5 was the default for BERT; but 400 may be enough to practically minimize the loss
         scheduler = get_linear_schedule_with_warmup(
             optimizer,
             num_warmup_steps=0,
@@ -271,8 +267,8 @@ class Coercion:
         #  (b) get the input_ids (second [0]),
         #  (c) count the input_ids (.shape[-1], because the number of input_ids is stored in the second/last dimension).
         # Then, you can take the max to know how much you should pad the rest.
-        max_length = max([(self.builder.encode(query[0])[0]).shape[-1] for query in queries])
-        max_labels_length = max([(self.builder.encode(target1[0])[0]).shape[-1] for target1 in targets1])
+        max_length = max([(self.builder.encode(query[0])[0]).shape[1] for query in queries])
+        max_labels_length = max([(self.builder.encode(target1[0])[0]).shape[1] for target1 in targets1])
 
         input_ids_and_gather_indexes = [self.builder.encode(query[0], max_length=max_length) for query in queries]
         input_ids = torch.cat([input_id for input_id in [i for i, _ in input_ids_and_gather_indexes]], dim=0).to(device)
@@ -284,7 +280,7 @@ class Coercion:
                                      for target1 in targets1]
         labels = torch.cat([label for label in [lab for lab, _ in labels_and_gather_indexes]], dim=0).to(device)
 
-        gather_indexes = [g for _, g in labels_and_gather_indexes]
+        gather_indexes = [g for _, g in labels_and_gather_indexes]  # here BERT uses the input_ids
 
         # target_idx is the index of target word in the token list.
         # get position of #TOKEN# in gather_indexes g as given by the query q[1].
@@ -318,7 +314,7 @@ class Coercion:
                     removed += 1
         target_idxs = torch.stack(target_idxs).to(device)#.unsqueeze(1)  #torch.tensor(target_idxs, device=device).unsqueeze(1)
 
-        # token_idx is the index of target word in the vocabulary of BERT
+        # token_idx is the index of target token in the vocabulary of BERT
         token_idxs = labels.gather(dim=-1, index=target_idxs)  # Hint: for CUDA errors: put everything on .cpu() here
         vocab_size = len(tokenizer)  # can be checked with tokenizer.get_added_vocab()
         # Get all indices different to the new token_idx:
@@ -331,7 +327,7 @@ class Coercion:
 
         # model.train()
 
-        with tqdm(total=6, desc="Train Loss", position=2, disable=False) as loss_bar:
+        with tqdm(total=6, desc="Train Loss", position=2, disable=True) as loss_bar:
             for _ in trange(epoch, position=1, desc="Epoch", leave=True, disable=False):
                 for batched_input_ids, batched_labels, batched_target_idxs, batched_vec_targets in dataloader:
                     optimizer.zero_grad()

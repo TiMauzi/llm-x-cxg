@@ -199,7 +199,7 @@ class Coercion:
 
             print("*************************************************************************")
             print('After training:')
-            nlp = FillMaskPipeline(model, self.builder.tokenizer, device=0)
+            nlp = FillMaskPipeline(model, self.builder.tokenizer, device=device)
             for new_query, query in set(zip(new_queries, queries)):  # only view different queries
                 print("query: " + new_query)
                 assert "[MASK]" in new_query

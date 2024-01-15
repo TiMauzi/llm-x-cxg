@@ -78,7 +78,7 @@ class DataBuilder:
         self.tokenizer = tokenizer
 
     def encode(self, text: str, max_length=None):
-        tokens = text.split()
+        tokens = text.split()  # ["</s>"] + text.split() + ["</s>", "de_DE"]
         # Build token indices
         # _, gather_indexes = self._manual_tokenize(tokens)
         # -> will soon be in encode_dict.word_ids()
@@ -95,6 +95,8 @@ class DataBuilder:
             encode_dict = self.tokenizer(
                 tokens, return_attention_mask=True,
                 return_token_type_ids=False, return_tensors='pt', is_split_into_words=True)
+        encode_dict["input_ids"] = torch.cat((torch.tensor([[2, 0]]), encode_dict['input_ids'][:, 1:]), dim=-1)  # </s> <s> must be added manually
+        encode_dict["attention_mask"] = torch.ones_like(encode_dict["input_ids"])
         input_ids = encode_dict['input_ids']
 
         # The list of word ids for each token is needed. This is only available for "TokenizerFast", so we need to
@@ -255,8 +257,8 @@ class Coercion:
 
     def _train(self, model, vec_targets, queries, targets1):
         loss_fct = nn.MSELoss(reduction='mean')  # mean will be computed later
-        optimizer = torch.optim.AdamW(model.parameters(), lr=0.005, eps=1e-8)
-        epoch = 5000 // len(queries)  # 1000==5000//5 was the default for BERT; but 400 may be enough to practically minimize the loss
+        optimizer = torch.optim.AdamW(model.parameters(), lr=0.1, eps=1e-8)
+        epoch = 5000 // len(queries)  # 5000 // len(queries)  # 1000==5000//5 was the default for BERT; but 400 may be enough to practically minimize the loss
         scheduler = get_linear_schedule_with_warmup(
             optimizer,
             num_warmup_steps=0,
@@ -312,7 +314,8 @@ class Coercion:
                     targets1.pop(i-removed)
                     vec_targets.pop(i-removed)
                     removed += 1
-        target_idxs = torch.stack(target_idxs).to(device)#.unsqueeze(1)  #torch.tensor(target_idxs, device=device).unsqueeze(1)
+        # TODO maybe + 1 because the output is shifted to the right (</s> <s> vs. de_DE) by one in comparison to the input?:
+        target_idxs = torch.stack(target_idxs).to(device)  #.unsqueeze(1)  #torch.tensor(target_idxs, device=device).unsqueeze(1)
 
         # token_idx is the index of target token in the vocabulary of BERT
         token_idxs = labels.gather(dim=-1, index=target_idxs)  # Hint: for CUDA errors: put everything on .cpu() here
@@ -327,7 +330,7 @@ class Coercion:
 
         # model.train()
 
-        with tqdm(total=6, desc="Train Loss", position=2, disable=True) as loss_bar:
+        with tqdm(total=6, desc="Train Loss", position=2, disable=False) as loss_bar:
             for _ in trange(epoch, position=1, desc="Epoch", leave=True, disable=False):
                 for batched_input_ids, batched_labels, batched_target_idxs, batched_vec_targets in dataloader:
                     optimizer.zero_grad()
@@ -335,12 +338,11 @@ class Coercion:
                     # "Automatic mixed-precision" (AMP) is faster and helps reducing the workload of the GPU:
                     # with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=False):  # maybe float16 if bfloat16 doesn't work
                     # ... this does seem to be buggy, though...
-
                     outputs = model(batched_input_ids, output_hidden_states=True, labels=batched_labels)
 
                     z = torch.gather(
                         outputs.decoder_hidden_states[-1], dim=1,
-                        index=batched_target_idxs.unsqueeze(-1).expand(-1, -1, model.config.d_model)  # d_model == 1024
+                        index=batched_target_idxs.unsqueeze(-1).expand(-1, -1, model.config.d_model) # d_model == 1024
                     )
 
                     loss = loss_fct(z, batched_vec_targets)
@@ -532,22 +534,22 @@ if __name__ == '__main__':
     i = start
     for group in tqdm(data[start:end], initial=start, total=len(data),
                       desc="Construction", position=0, leave=True):
-        #try:
-        print(i, group[0]["label"])
+        try:
+            print(i, group[0]["label"])
 
-        co.coercion(i, group)  # , devices)
-        print('==' * 40)
-        result = get_lowest_loss_arrays(z_list, loss_list)
+            co.coercion(i, group)  # , devices)
+            print('==' * 40)
+            result = get_lowest_loss_arrays(z_list, loss_list)
 
-        # save the pseudowords
-        np.save(DIR_OUT + f'pseudowords_comapp_{start}_{end}.npy', result)
+            # save the pseudowords
+            np.save(DIR_OUT + f'pseudowords_comapp_{start}_{end}.npy', result)
 
-        with open(DIR_OUT + f"order_{temp}.csv", "a+") as order_file:
-            order_file.write(f"{i};" + group[0]["label"] + "\n")
+            with open(DIR_OUT + f"order_{temp}.csv", "a+") as order_file:
+                order_file.write(f"{i};" + group[0]["label"] + "\n")
 
-        #except Exception as e:
-        #    if type(e) != KeyboardInterrupt:
-        #        print(f"Construction with index {i} threw an error!\n", e)
+        except Exception as e:
+            if type(e) != KeyboardInterrupt:
+                print(f"Construction with index {i} threw an error!\n", e, "\n")
         i += 1
 
     result = get_lowest_loss_arrays(z_list, loss_list)

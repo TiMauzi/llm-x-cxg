@@ -314,6 +314,7 @@ class Coercion:
         # TODO maybe + 1 because the output is perhaps shifted to the right (</s> <s> vs. de_DE) by one in comparison to the input?
         target_idxs = torch.stack(target_idxs).to(device)  #.unsqueeze(1)  #torch.tensor(target_idxs, device=device).unsqueeze(1)
 
+        # TODO Konstruktion 3 - hier wird für den zweiten Satz die falsche token_idxs berechnet; liegt vermutlich an der Anzahl maskierter Token, wenn sie VOR dem #TOKEN# stehen!
         # token_idx is the index of target token in the vocabulary of mBART
         token_idxs = input_ids.gather(dim=-1, index=target_idxs)  # Hint: for CUDA errors: put everything on .cpu() here
         vocab_size = len(tokenizer)  # can be checked with tokenizer.get_added_vocab()

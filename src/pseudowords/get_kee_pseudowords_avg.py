@@ -95,8 +95,8 @@ class DataBuilder:
             encode_dict = self.tokenizer(
                 tokens, return_attention_mask=True,
                 return_token_type_ids=False, return_tensors='pt', is_split_into_words=True)
-        encode_dict["input_ids"] = torch.cat((torch.tensor([[2, 0]]), encode_dict['input_ids'][:, 1:]), dim=-1)  # </s> <s> must be added manually
-        encode_dict["attention_mask"] = torch.ones_like(encode_dict["input_ids"])
+        # encode_dict["input_ids"] = torch.cat((torch.tensor([[2, 0]]), encode_dict['input_ids'][:, 1:]), dim=-1)  # </s> <s> must be added manually
+        # encode_dict["attention_mask"] = torch.ones_like(encode_dict["input_ids"])
         input_ids = encode_dict['input_ids']
 
         # The list of word ids for each token is needed. This is only available for "TokenizerFast", so we need to
@@ -316,10 +316,10 @@ class Coercion:
                     removed += 1
         # TODO WARUM WERDEN BEI DEN NEUEN ANLÄUFEN IMMER FREMDSPRACHLICHE STRINGS VORGESCHLAGEN?
         # TODO maybe + 1 because the output is shifted to the right (</s> <s> vs. de_DE) by one in comparison to the input?:
-        target_idxs = torch.stack(target_idxs).to(device) + 2 #.unsqueeze(1)  #torch.tensor(target_idxs, device=device).unsqueeze(1)
+        target_idxs = torch.stack(target_idxs).to(device)  #.unsqueeze(1)  #torch.tensor(target_idxs, device=device).unsqueeze(1)
 
-        # token_idx is the index of target token in the vocabulary of BERT
-        token_idxs = labels.gather(dim=-1, index=target_idxs)  # Hint: for CUDA errors: put everything on .cpu() here
+        # token_idx is the index of target token in the vocabulary of mBART
+        token_idxs = input_ids.gather(dim=-1, index=target_idxs)  # Hint: for CUDA errors: put everything on .cpu() here
         vocab_size = len(tokenizer)  # can be checked with tokenizer.get_added_vocab()
         # Get all indices different to the new token_idx:
         indices = torch.tensor([i for i in range(vocab_size) if i not in token_idxs], device=device, dtype=torch.long)
@@ -343,7 +343,7 @@ class Coercion:
 
                     z = torch.gather(
                         outputs.decoder_hidden_states[-1], dim=1,
-                        index=batched_target_idxs.unsqueeze(-1).expand(-1, -1, model.config.d_model) # d_model == 1024
+                        index=batched_target_idxs.unsqueeze(-1).expand(-1, -1, model.config.d_model) # d_model == 1024  # TODO we need one further step, because of an additional token at the beginning
                     )
 
                     loss = loss_fct(z, batched_vec_targets)

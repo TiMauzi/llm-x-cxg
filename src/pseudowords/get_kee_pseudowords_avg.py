@@ -314,6 +314,7 @@ class Coercion:
                     targets1.pop(i-removed)
                     vec_targets.pop(i-removed)
                     removed += 1
+        # TODO WARUM WERDEN BEI DEN NEUEN ANLÄUFEN IMMER FREMDSPRACHLICHE STRINGS VORGESCHLAGEN?
         # TODO maybe + 1 because the output is shifted to the right (</s> <s> vs. de_DE) by one in comparison to the input?:
         target_idxs = torch.stack(target_idxs).to(device) + 2 #.unsqueeze(1)  #torch.tensor(target_idxs, device=device).unsqueeze(1)
 

@@ -130,6 +130,7 @@ class Coercion:
 
         new_queries = []
         queries = []
+        #targets1 = []
         vec_targets = []
 
         # Print targets (and their id's) and the query (and its id)
@@ -155,6 +156,8 @@ class Coercion:
                 new_queries = pickle.load(file)
             with open(DOC_PATH + "queries_bsbbert_" + str(group_no), "rb") as file:
                 queries = pickle.load(file)
+            #with open(DOC_PATH + "targets1_" + str(group_no), "rb") as file:
+            #    targets1 = pickle.load(file)
             with open(DOC_PATH + "vec_targets_bsbbert_" + str(group_no), "rb") as file:
                 vec_targets = pickle.load(file)
 
@@ -175,11 +178,14 @@ class Coercion:
                     print(query)
                     new_queries.append(new_query)
                     queries.append(query)
+                    #targets1.append((entry["target1"], entry["target1_idx"]))
 
             with open(DOC_PATH + "new_queries_bsbbert_" + str(group_no), "wb") as file:
                 pickle.dump(new_queries, file)
             with open(DOC_PATH + "queries_bsbbert_" + str(group_no), "wb") as file:
                 pickle.dump(queries, file)
+            #with open(DOC_PATH + "targets1_" + str(group_no), "wb") as file:
+            #    pickle.dump(targets1, file)
             with open(DOC_PATH + "vec_targets_bsbbert_" + str(group_no), "wb") as file:
                 pickle.dump(vec_targets, file)
 
@@ -226,9 +232,10 @@ class Coercion:
         input_ids = torch.cat([input_id for input_id in [i for i, _ in input_ids_and_gather_indexes]], dim=0).to(device)
         gather_indexes = [gather_index for gather_index in [g for _, g in input_ids_and_gather_indexes]]
 
-        # target_idx is the index of target word in the token list. (+1 due to [CLS] token)
-        target_idxs = [g[q[1]][0]+1 for g, q in zip(gather_indexes, queries)]
+        # target_idx is the index of target word in the token list. (+1 due to [CLS] token).
+        target_idxs = [tokenizer.tokenize(query[0]).index(NEW_TOKEN) + 1 for query in queries]
         target_idxs = torch.tensor(target_idxs, device=device).unsqueeze(-1)
+
         # token_idx is the index of target token in the vocabulary of BERT
         token_idxs = input_ids.gather(dim=-1, index=target_idxs)
         vocab_size = len(tokenizer.get_vocab())  # can be checked with tokenizer.get_added_vocab()

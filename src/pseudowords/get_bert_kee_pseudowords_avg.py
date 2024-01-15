@@ -227,8 +227,10 @@ class Coercion:
         gather_indexes = [gather_index for gather_index in [g for _, g in input_ids_and_gather_indexes]]
 
         # target_idx is the index of target word in the token list. (+1 due to [CLS] token)
-        target_idxs = [g[q[1]][0]+1 for g, q in zip(gather_indexes, queries)]
+        #target_idxs = [g[q[1]][0]+1 for g, q in zip(gather_indexes, queries)]
+        target_idxs = [tokenizer.tokenize(query[0]).index(NEW_TOKEN) + 1 for query in queries]
         target_idxs = torch.tensor(target_idxs, device=device).unsqueeze(-1)
+        
         # token_idx is the index of target token in the vocabulary of BERT
         token_idxs = input_ids.gather(dim=-1, index=target_idxs)
         vocab_size = len(tokenizer.get_vocab())  # can be checked with tokenizer.get_added_vocab()

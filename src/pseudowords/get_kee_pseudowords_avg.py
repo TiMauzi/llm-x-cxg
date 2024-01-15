@@ -315,7 +315,7 @@ class Coercion:
                     vec_targets.pop(i-removed)
                     removed += 1
         # TODO maybe + 1 because the output is shifted to the right (</s> <s> vs. de_DE) by one in comparison to the input?:
-        target_idxs = torch.stack(target_idxs).to(device)  #.unsqueeze(1)  #torch.tensor(target_idxs, device=device).unsqueeze(1)
+        target_idxs = torch.stack(target_idxs).to(device) + 2 #.unsqueeze(1)  #torch.tensor(target_idxs, device=device).unsqueeze(1)
 
         # token_idx is the index of target token in the vocabulary of BERT
         token_idxs = labels.gather(dim=-1, index=target_idxs)  # Hint: for CUDA errors: put everything on .cpu() here

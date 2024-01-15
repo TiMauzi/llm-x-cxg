@@ -143,7 +143,7 @@ class Coercion:
 
             # Model output
             nlp = FillMaskPipeline(model=model, tokenizer=self.builder.tokenizer, device=device)
-            output = nlp(entry["query"])
+            output = nlp("[CLS] " + entry["query"] + " [SEP]")
             output = self._format(output)
             print('[MASK]=' + str(output))
 
@@ -203,7 +203,7 @@ class Coercion:
             for new_query, query in set(zip(new_queries, queries)):  # only view different queries
                 print("query: " + new_query)
                 assert "[MASK]" in new_query
-                output = nlp(new_query)
+                output = nlp("[CLS] " + new_query + " [SEP]")
                 output = self._format(output)
                 print('[MASK]=' + str(output))
 

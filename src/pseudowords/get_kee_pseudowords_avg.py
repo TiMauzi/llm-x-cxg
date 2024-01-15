@@ -216,7 +216,7 @@ class Coercion:
             # model.resize_token_embeddings(len(self.builder.tokenizer))  # resize the model to fit the new token
             # model.to(device)
             # Random initialization, same initialization as huggingface
-            weight = model.model.shared.weight.data[-1]
+            weight = model.model.encoder.embed_tokens.weight.data[-1]
             nn.init.normal_(weight, mean=0.0, std=model.config.init_std)
 
             # model.train()
@@ -287,9 +287,6 @@ class Coercion:
         # target_idx is the index of target word in the token list.
         # get position of #TOKEN# in gather_indexes g as given by the query q[1].
         # "argmax" gets the position for which this condition holds.
-        # TODO Hier müssten bei längeren #TOKEN#s jeweils mehrere Indizes rauskommen
-        #  -> Problem: targets1 beinhaltet nur immer ein idx (whitespace-tokenized, nicht nach BART-Tokens!!)
-        #  -> (done?)
         target_idxs = [torch.nonzero(g.eq(t[1])).squeeze(dim=-1) for g, t in zip(gather_indexes, targets1)]  #[g.eq(t[1]).int().argmax() for g, t in zip(gather_indexes, targets1)]
 
         target_occurrences = [g.eq(q[1]).sum().item() for g, q in zip(gather_indexes, queries)]
@@ -314,8 +311,7 @@ class Coercion:
                     targets1.pop(i-removed)
                     vec_targets.pop(i-removed)
                     removed += 1
-        # TODO WARUM WERDEN BEI DEN NEUEN ANLÄUFEN IMMER FREMDSPRACHLICHE STRINGS VORGESCHLAGEN?
-        # TODO maybe + 1 because the output is shifted to the right (</s> <s> vs. de_DE) by one in comparison to the input?:
+        # TODO maybe + 1 because the output is perhaps shifted to the right (</s> <s> vs. de_DE) by one in comparison to the input?
         target_idxs = torch.stack(target_idxs).to(device)  #.unsqueeze(1)  #torch.tensor(target_idxs, device=device).unsqueeze(1)
 
         # token_idx is the index of target token in the vocabulary of mBART

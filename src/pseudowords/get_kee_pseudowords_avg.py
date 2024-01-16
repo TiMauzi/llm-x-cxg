@@ -293,14 +293,13 @@ class Coercion:
 
         target_occurrences = [g.eq(q[1]).sum().item() for g, q in zip(gather_indexes, queries)]
         target_lengths = set(target_occurrences)
+        most_common_target_length = max(target_lengths, key=target_occurrences.count)
 
         removed = 0
         # check if all tokens have the same length (should usually be the case, but not always)
         if len(target_lengths) > 1:
             # TODO The new token has different lengths in different examples. For now, we remove the sentences with "different lengths"...
             # in case there are a few new tokens with different lengths, remove the corresponding sentences
-            most_common_target_length = max(target_lengths, key=target_occurrences.count)
-
             for i in range(len(target_occurrences)):
                 if target_occurrences[i] != most_common_target_length:
                     gather_indexes.pop(i-removed)
@@ -317,15 +316,19 @@ class Coercion:
         target_idxs = torch.stack(target_idxs).to(device)  #.unsqueeze(1)  #torch.tensor(target_idxs, device=device).unsqueeze(1)
 
         # Now we need #TOKEN# as our target, so we redefine it:
-        token_target_idxs = [tokenizer.tokenize(input_id_list).index(NEW_TOKEN) for input_id_list in tokenizer.batch_decode(input_ids)]
-        token_target_idxs = torch.tensor(token_target_idxs, device=device).unsqueeze(-1)
+        target_idxs = [tokenizer.tokenize(input_id_list).index(NEW_TOKEN) for input_id_list in tokenizer.batch_decode(input_ids)]
+        target_idxs = torch.tensor(target_idxs, device=device).unsqueeze(-1)
 
-        # TODO Konstruktion 3 - hier wird für den zweiten Satz die falsche token_idxs berechnet; liegt vermutlich an der Anzahl maskierter Token, wenn sie VOR dem #TOKEN# stehen!
-        # token_idx is the index of target token in the vocabulary of mBART
-        token_idxs = input_ids.gather(dim=-1, index=token_target_idxs)  # Hint: for CUDA errors: put everything on .cpu() here
+        # TODO Konstruktion 3 - hier wurde für den zweiten Satz die falsche token_idxs berechnet; liegt vermutlich an der Anzahl maskierter Token, wenn sie VOR dem #TOKEN# stehen!
+        # token_idx is the index of target token in the vocabulary of mBART; it's always the first of multiple ones!
+        token_idxs = input_ids.gather(dim=-1, index=target_idxs)  # Hint: for CUDA errors: put everything on .cpu() here
         vocab_size = len(tokenizer)  # can be checked with tokenizer.get_added_vocab()
         # Get all indices different to the new token_idx:
         indices = torch.tensor([i for i in range(vocab_size) if i not in token_idxs], device=device, dtype=torch.long)
+
+        # TODO jetzt muss für den Fall mehrerer Tokens wieder dafür gesorgt werden, dass token_idxs mehrere enthält!
+        new_target_idxs = [torch.arange(int(target_idx), int(target_idx) + most_common_target_length, device=device) for target_idx in target_idxs]
+        target_idxs = torch.stack(new_target_idxs)
 
         vec_targets = torch.stack(vec_targets).squeeze(1)
 
@@ -538,22 +541,22 @@ if __name__ == '__main__':
     i = start
     for group in tqdm(data[start:end], initial=start, total=len(data),
                       desc="Construction", position=0, leave=True):
-        try:
-            print(i, group[0]["label"])
+        #try:
+        print(i, group[0]["label"])
 
-            co.coercion(i, group)  # , devices)
-            print('==' * 40)
-            result = get_lowest_loss_arrays(z_list, loss_list)
+        co.coercion(i, group)  # , devices)
+        print('==' * 40)
+        result = get_lowest_loss_arrays(z_list, loss_list)
 
-            # save the pseudowords
-            np.save(DIR_OUT + f'pseudowords_comapp_{start}_{end}.npy', result)
+        # save the pseudowords
+        np.save(DIR_OUT + f'pseudowords_comapp_{start}_{end}.npy', result)
 
-            with open(DIR_OUT + f"order_{temp}.csv", "a+") as order_file:
-                order_file.write(f"{i};" + group[0]["label"] + "\n")
+        with open(DIR_OUT + f"order_{temp}.csv", "a+") as order_file:
+            order_file.write(f"{i};" + group[0]["label"] + "\n")
 
-        except Exception as e:
-            if type(e) != KeyboardInterrupt:
-                print(f"Construction with index {i} threw an error!\n", e, "\n")
+        #except Exception as e:
+        #    if type(e) != KeyboardInterrupt:
+        #        print(f"Construction with index {i} threw an error!\n", e, "\n")
         i += 1
 
     result = get_lowest_loss_arrays(z_list, loss_list)

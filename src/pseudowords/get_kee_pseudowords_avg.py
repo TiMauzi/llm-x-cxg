@@ -314,15 +314,15 @@ class Coercion:
                     vec_targets.pop(i-removed)
                     removed += 1
         # TODO maybe + 1 because the output is perhaps shifted to the right (</s> <s> vs. de_DE) by one in comparison to the input?
-        #target_idxs = torch.stack(target_idxs).to(device)  #.unsqueeze(1)  #torch.tensor(target_idxs, device=device).unsqueeze(1)
+        target_idxs = torch.stack(target_idxs).to(device)  #.unsqueeze(1)  #torch.tensor(target_idxs, device=device).unsqueeze(1)
 
         # Now we need #TOKEN# as our target, so we redefine it:
-        target_idxs = [tokenizer.tokenize(input_id_list).index(NEW_TOKEN) for input_id_list in tokenizer.batch_decode(input_ids)]
-        target_idxs = torch.tensor(target_idxs, device=device).unsqueeze(-1)
+        token_target_idxs = [tokenizer.tokenize(input_id_list).index(NEW_TOKEN) for input_id_list in tokenizer.batch_decode(input_ids)]
+        token_target_idxs = torch.tensor(token_target_idxs, device=device).unsqueeze(-1)
 
         # TODO Konstruktion 3 - hier wird für den zweiten Satz die falsche token_idxs berechnet; liegt vermutlich an der Anzahl maskierter Token, wenn sie VOR dem #TOKEN# stehen!
         # token_idx is the index of target token in the vocabulary of mBART
-        token_idxs = input_ids.gather(dim=-1, index=target_idxs)  # Hint: for CUDA errors: put everything on .cpu() here
+        token_idxs = input_ids.gather(dim=-1, index=token_target_idxs)  # Hint: for CUDA errors: put everything on .cpu() here
         vocab_size = len(tokenizer)  # can be checked with tokenizer.get_added_vocab()
         # Get all indices different to the new token_idx:
         indices = torch.tensor([i for i in range(vocab_size) if i not in token_idxs], device=device, dtype=torch.long)

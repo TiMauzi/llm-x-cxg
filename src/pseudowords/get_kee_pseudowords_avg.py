@@ -247,7 +247,7 @@ class Coercion:
                 outputs = tokenizer(new_query, return_tensors="pt").to(model.device)
                 outputs = model.generate(outputs["input_ids"], max_length=target_length, num_return_sequences=5,
                                          num_beams=20, output_scores=True, return_dict_in_generate=True)
-                output_strings = tokenizer.batch_decode(outputs.sequences, skip_special_tokens=True)
+                output_strings = tokenizer.batch_decode(outputs.sequences, clean_up_tokenization_spaces=True)#, skip_special_tokens=True)
                 output_probs = torch.exp(outputs.sequences_scores)
 
                 print([f'output: {output}, score: {score}'

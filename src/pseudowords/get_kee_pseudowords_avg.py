@@ -386,7 +386,7 @@ class Coercion:
             outputs = model(input_ids=input_ids, output_hidden_states=True)  # labels are shifted right automatically
             # get all indices that are part of the KEE; slice is needed for converting the tuple to a slice
             target_slice = gather_indexes.eq(target[1]).nonzero()
-            target_slice = slice(target_slice.min(), target_slice.max()+1)
+            target_slice = slice(target_slice.min(), target_slice.max()+1)  # TODO
             x_target = outputs.decoder_hidden_states[-1][:, target_slice]
             # x_target = torch.cat([outputs.decoder_hidden_states[-1][:, slice(*target_idx)] for target_idx in target_idxs], dim=1)
         return x_target

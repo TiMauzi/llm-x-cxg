@@ -42,7 +42,7 @@ Item = Tuple[str, int]
 Example = Tuple[Item, Item]
 
 # ARGS
-QUERIES_PATH = "../../data/pseudowords/CoMaPP_all.json"  # path to queries
+QUERIES_PATH = "../../data/pseudowords/CoMaPP_all_test.json"  # path to queries
 DATASET_PATH = "../../data/pseudowords/CoMapp_Dataset.csv"
 DIR_OUT = "../../out/"  # path to dir to save the pseudowords
 CACHE = "../../out/cache/"  # path to cach directory
@@ -257,8 +257,8 @@ class Coercion:
 
     def _train(self, model, vec_targets, queries, targets1):
         loss_fct = nn.MSELoss(reduction='mean')  # mean will be computed later
-        optimizer = torch.optim.AdamW(model.parameters(), lr=0.1, eps=1e-8)
-        epoch = 5000 // len(queries)  # 5000 // len(queries)  # 1000==5000//5 was the default for BERT; but 400 may be enough to practically minimize the loss
+        optimizer = torch.optim.AdamW(model.parameters(), lr=0.001)
+        epoch = 500 # 5000 // len(queries)  # 1000==5000//5 was the default for BERT; but 400 may be enough to practically minimize the loss
         scheduler = get_linear_schedule_with_warmup(
             optimizer,
             num_warmup_steps=0,
@@ -337,7 +337,7 @@ class Coercion:
 
         # model.train()
 
-        with tqdm(total=6, desc="Train Loss", position=2, disable=True) as loss_bar:
+        with tqdm(total=6, desc="Train Loss", position=2, disable=False) as loss_bar:
             for _ in trange(epoch, position=1, desc="Epoch", leave=True, disable=False):
                 for batched_input_ids, batched_labels, batched_target_idxs, batched_vec_targets in dataloader:
                     optimizer.zero_grad()
@@ -345,7 +345,9 @@ class Coercion:
                     # "Automatic mixed-precision" (AMP) is faster and helps reducing the workload of the GPU:
                     # with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=False):  # maybe float16 if bfloat16 doesn't work
                     # ... this does seem to be buggy, though...
-                    outputs = model(batched_input_ids, output_hidden_states=True, labels=batched_labels)
+                    outputs = model(batched_input_ids, output_hidden_states=True, labels=batched_labels) # TODO
+                    logits = outputs.logits
+                    output_ids = logits.argmax(dim=-1)  # TODO Anschauen, was hier rauskommt und mit input_ids vergleichen...
 
                     z = torch.gather(
                         outputs.decoder_hidden_states[-1], dim=1,
@@ -383,10 +385,12 @@ class Coercion:
         with torch.no_grad():
             # Find the learning target x
             input_ids = input_ids.to(device)
-            outputs = model(input_ids=input_ids, output_hidden_states=True)  # labels are shifted right automatically
+            outputs = model(input_ids=input_ids, output_hidden_states=True, return_dict=True)  # labels are shifted right automatically
+            logits = outputs.logits
+            output_ids = logits.argmax(dim=-1)
             # get all indices that are part of the KEE; slice is needed for converting the tuple to a slice
             target_slice = gather_indexes.eq(target[1]).nonzero()
-            target_slice = slice(target_slice.min(), target_slice.max()+1)  # TODO
+            target_slice = slice(target_slice.min(), target_slice.max()+1)  # TODO <s> Vor Input hinzugefügt...
             x_target = outputs.decoder_hidden_states[-1][:, target_slice]
             # x_target = torch.cat([outputs.decoder_hidden_states[-1][:, slice(*target_idx)] for target_idx in target_idxs], dim=1)
         return x_target

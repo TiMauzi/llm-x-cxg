@@ -378,7 +378,7 @@ class Coercion:
                     loss_bar.refresh()
                     print("\n" + str(tokenizer.batch_decode(
                         output_ids[:, torch.min(batched_target_idxs+offset):torch.max(batched_target_idxs)+offset+1]
-                    )), "->", tokenizer.batch_decode(output_ids))
+                    )))#, "->", tokenizer.batch_decode(output_ids))
 
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)

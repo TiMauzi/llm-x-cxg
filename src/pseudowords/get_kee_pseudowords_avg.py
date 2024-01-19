@@ -144,8 +144,8 @@ class Coercion:
         # Print targets (and their ids) and the query (and its id)
         for entry in group:
             # The inputs need to be tweaked slightly in order to work with BART's index shift:
-            entry["target1"] = "<s> " + entry["target1"] + " </s> de_DE"
-            entry["query"] = "<s> " + entry["query"] + " </s> de_DE"
+            entry["target1"] = "<s> " + entry["target1"] #+ " </s> de_DE"
+            entry["query"] = "<s> " + entry["query"] #+ " </s> de_DE"
             entry["target1_idx"] += 1
             entry["query_idx"] += 1
 
@@ -263,7 +263,7 @@ class Coercion:
 
     def _train(self, model, vec_targets, queries, targets1):
         loss_fct = nn.MSELoss(reduction='mean')  # mean will be computed later
-        optimizer = torch.optim.AdamW(model.parameters(), lr=0.1)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=0.3)
         epoch = 500 # 5000 // len(queries)  # 1000==5000//5 was the default for BERT; but 400 may be enough to practically minimize the loss
         scheduler = get_linear_schedule_with_warmup(
             optimizer,

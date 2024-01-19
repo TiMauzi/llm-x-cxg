@@ -42,7 +42,7 @@ Item = Tuple[str, int]
 Example = Tuple[Item, Item]
 
 # ARGS
-QUERIES_PATH = "../../data/pseudowords/CoMaPP_all_test.json"  # path to queries
+QUERIES_PATH = "../../data/pseudowords/CoMaPP_all.json"  # path to queries
 DATASET_PATH = "../../data/pseudowords/CoMapp_Dataset.csv"
 DIR_OUT = "../../out/"  # path to dir to save the pseudowords
 CACHE = "../../out/cache/"  # path to cach directory
@@ -143,6 +143,12 @@ class Coercion:
 
         # Print targets (and their ids) and the query (and its id)
         for entry in group:
+            # The inputs need to be tweaked slightly in order to work with BART's index shift:
+            entry["target1"] = "<s> " + entry["target1"] + " </s> de_DE"
+            entry["query"] = "<s> " + entry["query"] + " </s> de_DE"
+            entry["target1_idx"] += 1
+            entry["query_idx"] += 1
+
             print(f'target1: {entry["target1"]}, {entry["target1_idx"]}')
             print(f'query: {entry["query"]}, {entry["query_idx"]}')
 
@@ -219,9 +225,9 @@ class Coercion:
             weight = model.model.encoder.embed_tokens.weight.data[-1]
             nn.init.normal_(weight, mean=0.0, std=model.config.init_std)
 
-            # model.train()
+            #model.train()
             model = self._train(model, vec_targets, queries, targets1)
-            # model.eval()
+            #model.eval()
 
             print("*************************************************************************")
             print('After training:')
@@ -257,7 +263,7 @@ class Coercion:
 
     def _train(self, model, vec_targets, queries, targets1):
         loss_fct = nn.MSELoss(reduction='mean')  # mean will be computed later
-        optimizer = torch.optim.AdamW(model.parameters(), lr=0.001)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=0.1)
         epoch = 500 # 5000 // len(queries)  # 1000==5000//5 was the default for BERT; but 400 may be enough to practically minimize the loss
         scheduler = get_linear_schedule_with_warmup(
             optimizer,
@@ -291,7 +297,7 @@ class Coercion:
 
         #target_idxs = [tokenizer.tokenize(query[0]).index(NEW_TOKEN) for query in queries]
 
-        target_occurrences = [g.eq(q[1]).sum().item() for g, q in zip(gather_indexes, queries)]
+        target_occurrences = [g.eq(t[1]).sum().item() for g, t in zip(gather_indexes, targets1)]
         target_lengths = set(target_occurrences)
         most_common_target_length = max(target_lengths, key=target_occurrences.count)
 
@@ -327,7 +333,10 @@ class Coercion:
         indices = torch.tensor([i for i in range(vocab_size) if i not in token_idxs], device=device, dtype=torch.long)
 
         # TODO jetzt muss für den Fall mehrerer Tokens wieder dafür gesorgt werden, dass token_idxs mehrere enthält!
-        new_target_idxs = [torch.arange(int(target_idx), int(target_idx) + most_common_target_length, device=device) for target_idx in target_idxs]
+        new_target_idxs = [
+            torch.arange(int(target_idx), int(target_idx) + most_common_target_length, device=device)
+            for target_idx in target_idxs
+        ]
         target_idxs = torch.stack(new_target_idxs)
 
         vec_targets = torch.stack(vec_targets).squeeze(1)
@@ -346,17 +355,30 @@ class Coercion:
                     # with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=False):  # maybe float16 if bfloat16 doesn't work
                     # ... this does seem to be buggy, though...
                     outputs = model(batched_input_ids, output_hidden_states=True, labels=batched_labels) # TODO
-                    logits = outputs.logits
-                    output_ids = logits.argmax(dim=-1)  # TODO Anschauen, was hier rauskommt und mit input_ids vergleichen...
+                    output_ids = outputs.logits.argmax(dim=-1)  # TODO Anschauen, was hier rauskommt und mit input_ids vergleichen...
+
+                    # TODO Hier muss herausgefunden werden
+                    #  (a) ob die <mask> vor dem #TOKEN# steht (falls nein, einfach wie gehabt weitermachen)
+                    #  (b) falls ja, muss die Differenz auf die batched_target_idxs draufaddiert werden (für jede neue Prediction!)
+                    if any([
+                        decoded.index("<mask>") < decoded.index("#TOKEN#")
+                        for decoded in tokenizer.batch_decode(batched_input_ids)
+                    ]):
+                        offset = batched_labels.shape[-1] - output_ids.shape[-1] + 1
+                    else:
+                        offset = 0
 
                     z = torch.gather(
                         outputs.decoder_hidden_states[-1], dim=1,
-                        index=batched_target_idxs.unsqueeze(-1).expand(-1, -1, model.config.d_model) # d_model == 1024  # TODO we need one further step, because of an additional token at the beginning
-                    )
+                        index=batched_target_idxs.unsqueeze(-1).expand(-1, -1, model.config.d_model) + offset # d_model == 1024  # TODO we need one further step, because of an additional token at the beginning
+                    )  # is equivalent to: outputs.decoder_hidden_states[-1][:, a:b, :] where a:b is the slice given by batched_target_idxs
 
                     loss = loss_fct(z, batched_vec_targets)
                     loss_bar.n = float(loss)
                     loss_bar.refresh()
+                    print("\n" + str(tokenizer.batch_decode(
+                        output_ids[:, torch.min(batched_target_idxs+offset):torch.max(batched_target_idxs)+offset+1]
+                    )), "->", tokenizer.batch_decode(output_ids))
 
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -386,13 +408,11 @@ class Coercion:
             # Find the learning target x
             input_ids = input_ids.to(device)
             outputs = model(input_ids=input_ids, output_hidden_states=True, return_dict=True)  # labels are shifted right automatically
-            logits = outputs.logits
-            output_ids = logits.argmax(dim=-1)
+            output_ids = outputs.logits.argmax(dim=-1)
             # get all indices that are part of the KEE; slice is needed for converting the tuple to a slice
             target_slice = gather_indexes.eq(target[1]).nonzero()
             target_slice = slice(target_slice.min(), target_slice.max()+1)  # TODO <s> Vor Input hinzugefügt...
-            x_target = outputs.decoder_hidden_states[-1][:, target_slice]
-            # x_target = torch.cat([outputs.decoder_hidden_states[-1][:, slice(*target_idx)] for target_idx in target_idxs], dim=1)
+            x_target = outputs.decoder_hidden_states[-1][:, target_slice]  # slice müsste 5,6,7 sein
         return x_target
 
     def _freeze(self, model):

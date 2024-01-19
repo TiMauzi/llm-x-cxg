@@ -346,7 +346,7 @@ class Coercion:
 
         # model.train()
 
-        with tqdm(total=6, desc="Train Loss", position=2, disable=False) as loss_bar:
+        with tqdm(total=6, desc="Train Loss", position=2, disable=True) as loss_bar:
             for _ in trange(epoch, position=1, desc="Epoch", leave=True, disable=False):
                 for batched_input_ids, batched_labels, batched_target_idxs, batched_vec_targets in dataloader:
                     optimizer.zero_grad()
@@ -376,9 +376,9 @@ class Coercion:
                     loss = loss_fct(z, batched_vec_targets)
                     loss_bar.n = float(loss)
                     loss_bar.refresh()
-                    print("\n" + str(tokenizer.batch_decode(
-                        output_ids[:, torch.min(batched_target_idxs+offset):torch.max(batched_target_idxs)+offset+1]
-                    )))#, "->", tokenizer.batch_decode(output_ids))
+                    #print("\n" + str(tokenizer.batch_decode(
+                    #    output_ids[:, torch.min(batched_target_idxs+offset):torch.max(batched_target_idxs)+offset+1]
+                    #)))#, "->", tokenizer.batch_decode(output_ids))
 
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)

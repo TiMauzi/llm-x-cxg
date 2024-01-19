@@ -264,7 +264,7 @@ class Coercion:
     def _train(self, model, vec_targets, queries, targets1):
         loss_fct = nn.MSELoss(reduction='mean')  # mean will be computed later
         optimizer = torch.optim.AdamW(model.parameters(), lr=0.3)
-        epoch = 500 # 5000 // len(queries)  # 1000==5000//5 was the default for BERT; but 400 may be enough to practically minimize the loss
+        epoch = 5000 // len(queries)  # 1000==5000//5 was the default for BERT; but 400 may be enough to practically minimize the loss
         scheduler = get_linear_schedule_with_warmup(
             optimizer,
             num_warmup_steps=0,

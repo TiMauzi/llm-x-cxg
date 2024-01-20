@@ -1,14 +1,21 @@
+"""
+Bert Coercion
+"""
 import argparse
+import csv
 import itertools
+import pickle
 import random
 from typing import List, Tuple, TextIO
+import gc
 import sys
 import logging
-from statistics import mean
 
+import transformers
 from tokenizers import AddedToken
-from transformers import (AutoTokenizer, MBartForConditionalGeneration,
-                          Text2TextGenerationPipeline, MBart50TokenizerFast, get_linear_schedule_with_warmup)
+from transformers import AutoTokenizer, MBart50Tokenizer, MBartForConditionalGeneration, Text2TextGenerationPipeline, \
+    MBart50TokenizerFast
+from transformers import get_linear_schedule_with_warmup
 import torch
 import torch.nn as nn
 import torch.optim
@@ -29,7 +36,7 @@ logging.basicConfig(
 
 from transformers.convert_slow_tokenizer import MBart50Converter, convert_slow_tokenizer
 
-NEW_TOKEN = AddedToken('#TOKEN#', single_word=False, lstrip=True, rstrip=True, normalized=True)
+NEW_TOKEN = "#TOKEN#"  # AddedToken('#TOKEN#', single_word=False, lstrip=True, rstrip=True, normalized=True)
 
 Item = Tuple[str, int]
 Example = Tuple[Item, Item]
@@ -137,8 +144,8 @@ class Coercion:
         # Print targets (and their ids) and the query (and its id)
         for entry in group:
             # The inputs need to be tweaked slightly in order to work with BART's index shift:
-            entry["target1"] = "<s> " + entry["target1"]
-            entry["query"] = "<s> " + entry["query"]
+            entry["target1"] = "<s> " + entry["target1"] #+ " </s> de_DE"
+            entry["query"] = "<s> " + entry["query"] #+ " </s> de_DE"
             entry["target1_idx"] += 1
             entry["query_idx"] += 1
 
@@ -156,22 +163,46 @@ class Coercion:
         model.resize_token_embeddings(len(self.builder.tokenizer))  # resize the model to fit the new token
 
         document_path = "../../out/cache/documents/"
-        for entry in group:
-            vec_targets.append(
-                self._get_target_embed((entry["target1"], entry["target1_idx"]), model)
-            )
+        try:
+            with open(document_path + "new_queries_" + str(group_no), "rb") as file:
+                new_queries = pickle.load(file)
+            with open(document_path + "queries_" + str(group_no), "rb") as file:
+                queries = pickle.load(file)
+            with open(document_path + "targets1_" + str(group_no), "rb") as file:
+                targets1 = pickle.load(file)
+            with open(document_path + "vec_targets_" + str(group_no), "rb") as file:
+                vec_targets = pickle.load(file)
 
-            new_query = entry["query"].split()
-            if new_query[entry["query_idx"]] == "[MASK]":
-                continue  # don't let #TOKEN# and [MASK] overlap
-            else:
-                new_query[entry["query_idx"]] = NEW_TOKEN.content
-                new_query = ' '.join(new_query)
-                query = (new_query, entry["query_idx"])
-                print(query)
-                new_queries.append(new_query)
-                queries.append(query)
-                targets1.append((entry["target1"], entry["target1_idx"]))
+        except FileNotFoundError:
+            for entry in group:
+                # the end of the target sequence is the begin plus the difference of target and query lengths:
+                #target_end = entry["target1_idx"] + (len(target_j.split()) - len(entry["query"].split())) + 1
+                vec_targets.append(
+                    # self._get_target_embed((target_j, (target_begin, target_end)), model)
+                    self._get_target_embed((entry["target1"], entry["target1_idx"]), model)
+                )
+
+                new_query = entry["query"].split()
+                if new_query[entry["query_idx"]] == "[MASK]":
+                    continue  # don't let #TOKEN# and [MASK] overlap
+                else:
+                    new_query[entry["query_idx"]] = NEW_TOKEN
+                    new_query = ' '.join(new_query)
+                    query = (new_query, entry["query_idx"])
+                    print(query)
+                    new_queries.append(new_query)
+                    queries.append(query)
+                    targets1.append((entry["target1"], entry["target1_idx"]))
+
+            with open(document_path + "new_queries_" + str(group_no), "wb") as file:
+                pickle.dump(new_queries, file)
+            with open(document_path + "queries_" + str(group_no), "wb") as file:
+                pickle.dump(queries, file)
+            with open(document_path + "targets1_" + str(group_no), "wb") as file:
+                pickle.dump(targets1, file)
+            with open(document_path + "vec_targets_" + str(group_no), "wb") as file:
+                pickle.dump(vec_targets, file)
+
 
         model = self._freeze(model)
 
@@ -181,11 +212,22 @@ class Coercion:
             print('-' * 40)
             print('Random {a}'.format(a=i))
 
+            # Reset model
+            # model.cpu()
+            # del model
+            # gc.collect()
+            # torch.cuda.empty_cache()
+            # model = MBartForConditionalGeneration.from_pretrained("facebook/mbart-large-50",
+            #                                                       return_dict=True)  # load model and save to cuda
+            # model.resize_token_embeddings(len(self.builder.tokenizer))  # resize the model to fit the new token
+            # model.to(device)
             # Random initialization, same initialization as huggingface
             weight = model.model.encoder.embed_tokens.weight.data[-1]
             nn.init.normal_(weight, mean=0.0, std=model.config.init_std)
 
+            #model.train()
             model = self._train(model, vec_targets, queries, targets1)
+            #model.eval()
 
             print("*************************************************************************")
             print('After training:')
@@ -196,18 +238,26 @@ class Coercion:
             token_length = len(tokenizer(targets1[0][0].split()[targets1[0][1]])["input_ids"][1:-1])
             for new_query in set(new_queries):  # only view different queries
                 print(f"query: {new_query}")
+
                 target_length = len(new_query) - 1 + token_length  # length of new query - #TOKEN# + target token
 
-                outputs = tokenizer(new_query, return_tensors="pt").to("cpu")
-                outputs = model.to("cpu").generate(outputs["input_ids"], max_length=target_length, num_return_sequences=5,
+                # nlp = Text2TextGenerationPipeline(model=model, tokenizer=self.builder.tokenizer, device=device)
+                # output = nlp("<s> " + new_query + " </s>", max_length=target_length, num_return_sequences=5,
+                #              num_beams=20, output_scores=True)#, return_dict_in_generate=True)
+                # output_strings = self._format(output)
+                # output_probs = torch.exp(output.sequences_scores)
+                #
+                # print([f'output: {output}, score: {score}'
+                #        for output, score in zip(output_strings, output_probs)])
+
+                outputs = tokenizer(new_query, return_tensors="pt").to(model.device)
+                outputs = model.generate(outputs["input_ids"], max_length=target_length, num_return_sequences=5,
                                          num_beams=20, output_scores=True, return_dict_in_generate=True)
                 output_strings = tokenizer.batch_decode(outputs.sequences, clean_up_tokenization_spaces=True)#, skip_special_tokens=True)
                 output_probs = torch.exp(outputs.sequences_scores)
 
                 print([f'output: {output}, score: {score}'
                        for output, score in zip(output_strings, output_probs)])
-
-                model.to(device)
 
             print("*************************************************************************")
 
@@ -238,61 +288,103 @@ class Coercion:
                                      for target1 in targets1]
         labels = torch.cat([label for label in [lab for lab, _ in labels_and_gather_indexes]], dim=0).to(device)
 
-        # Stack and pad targets:
-        # vec_targets = torch.stack(vec_targets).squeeze(1)
-        lengths = [t.shape[1] for t in vec_targets]
-        vec_targets = torch.nn.utils.rnn.pad_sequence([vec_target.squeeze() for vec_target in vec_targets],
-                                                      batch_first=True, padding_value=1)
+        gather_indexes = [g for _, g in labels_and_gather_indexes]  # here BERT uses the input_ids
 
-        dataloader = torch.utils.data.DataLoader(list(zip(input_ids, labels, vec_targets, lengths)),
+        # target_idx is the index of target word in the token list.
+        # get position of #TOKEN# in gather_indexes g as given by the query q[1].
+        # "argmax" gets the position for which this condition holds.
+        target_idxs = [torch.nonzero(g.eq(t[1])).squeeze(dim=-1) for g, t in zip(gather_indexes, targets1)]  #[g.eq(t[1]).int().argmax() for g, t in zip(gather_indexes, targets1)]
+
+        #target_idxs = [tokenizer.tokenize(query[0]).index(NEW_TOKEN) for query in queries]
+
+        target_occurrences = [g.eq(t[1]).sum().item() for g, t in zip(gather_indexes, targets1)]
+        target_lengths = set(target_occurrences)
+        most_common_target_length = max(target_lengths, key=target_occurrences.count)
+
+        removed = 0
+        # check if all tokens have the same length (should usually be the case, but not always)
+        if len(target_lengths) > 1:
+            # TODO The new token has different lengths in different examples. For now, we remove the sentences with "different lengths"...
+            # in case there are a few new tokens with different lengths, remove the corresponding sentences
+            for i in range(len(target_occurrences)):
+                if target_occurrences[i] != most_common_target_length:
+                    gather_indexes.pop(i-removed)
+                    input_ids = torch.cat((input_ids[:i-removed], input_ids[i-removed+1:]))  # equivalent to "pop"
+                    input_ids_and_gather_indexes.pop(i - removed)
+                    labels = torch.cat((labels[:i-removed], labels[i-removed+1:]))  # equivalent to "pop"
+                    labels_and_gather_indexes.pop(i-removed)
+                    queries.pop(i-removed)
+                    target_idxs.pop(i-removed)
+                    targets1.pop(i-removed)
+                    vec_targets.pop(i-removed)
+                    removed += 1
+        # TODO maybe + 1 because the output is perhaps shifted to the right (</s> <s> vs. de_DE) by one in comparison to the input?
+        target_idxs = torch.stack(target_idxs).to(device)  #.unsqueeze(1)  #torch.tensor(target_idxs, device=device).unsqueeze(1)
+
+        # Now we need #TOKEN# as our target, so we redefine it:
+        target_idxs = [tokenizer.tokenize(input_id_list).index(NEW_TOKEN) for input_id_list in tokenizer.batch_decode(input_ids)]
+        target_idxs = torch.tensor(target_idxs, device=device).unsqueeze(-1)
+
+        # TODO Konstruktion 3 - hier wurde für den zweiten Satz die falsche token_idxs berechnet; liegt vermutlich an der Anzahl maskierter Token, wenn sie VOR dem #TOKEN# stehen!
+        # token_idx is the index of target token in the vocabulary of mBART; it's always the first of multiple ones!
+        token_idxs = input_ids.gather(dim=-1, index=target_idxs)  # Hint: for CUDA errors: put everything on .cpu() here
+        vocab_size = len(tokenizer)  # can be checked with tokenizer.get_added_vocab()
+        # Get all indices different to the new token_idx:
+        indices = torch.tensor([i for i in range(vocab_size) if i not in token_idxs], device=device, dtype=torch.long)
+
+        # TODO jetzt muss für den Fall mehrerer Tokens wieder dafür gesorgt werden, dass token_idxs mehrere enthält!
+        new_target_idxs = [
+            torch.arange(int(target_idx), int(target_idx) + most_common_target_length, device=device)
+            for target_idx in target_idxs
+        ]
+        target_idxs = torch.stack(new_target_idxs)
+
+        vec_targets = torch.stack(vec_targets).squeeze(1)
+
+        dataloader = torch.utils.data.DataLoader(list(zip(input_ids, labels, target_idxs, vec_targets)),
                                                  batch_size=self.batch_size)
 
-        indices = torch.tensor(
-            [i for i in range(len(tokenizer)) if i < tokenizer.convert_tokens_to_ids(NEW_TOKEN.content)],
-            device=device, dtype=torch.long
-        )
         # model.train()
 
-        with (tqdm(total=6, desc="Train Loss", position=2, disable=False) as loss_bar):
-            losses = []
+        with tqdm(total=6, desc="Train Loss", position=2, disable=True) as loss_bar:
             for _ in trange(epoch, position=1, desc="Epoch", leave=True, disable=False):
-                for batched_input_ids, batched_labels, batched_vec_targets, batched_lengths in dataloader:
+                for batched_input_ids, batched_labels, batched_target_idxs, batched_vec_targets in dataloader:
                     optimizer.zero_grad()
 
-                    batched_vec_targets_list = torch.nn.utils.rnn.unpad_sequence(
-                        batched_vec_targets, batch_first=True, lengths=batched_lengths
-                    )
-                    batched_input_ids_list = torch.nn.utils.rnn.unpad_sequence(
-                        batched_input_ids, batch_first=True, lengths=batched_lengths
-                    )
-                    batched_labels_list = torch.nn.utils.rnn.unpad_sequence(
-                        batched_labels, batch_first=True, lengths=batched_lengths
-                    )
+                    # "Automatic mixed-precision" (AMP) is faster and helps reducing the workload of the GPU:
+                    # with torch.cuda.amp.autocast(dtype=torch.bfloat16, enabled=False):  # maybe float16 if bfloat16 doesn't work
+                    # ... this does seem to be buggy, though...
+                    outputs = model(batched_input_ids, output_hidden_states=True, labels=batched_labels) # TODO
+                    output_ids = outputs.logits.argmax(dim=-1)  # TODO Anschauen, was hier rauskommt und mit input_ids vergleichen...
 
-                    outputs = [
-                        model(i.unsqueeze(0), output_hidden_states=True, labels=lab.unsqueeze(0)) # TODO
-                        for i, lab in zip(batched_input_ids_list, batched_labels_list)
-                    ]
-                    output_ids = [output.logits.argmax(dim=-1) for output in outputs]
+                    # TODO Hier muss herausgefunden werden
+                    #  (a) ob die <mask> vor dem #TOKEN# steht (falls nein, einfach wie gehabt weitermachen)
+                    #  (b) falls ja, muss die Differenz auf die batched_target_idxs draufaddiert werden (für jede neue Prediction!)
+                    if any([
+                        decoded.index("<mask>") < decoded.index("#TOKEN#")
+                        for decoded in tokenizer.batch_decode(batched_input_ids)
+                    ]):
+                        offset = batched_labels.shape[-1] - output_ids.shape[-1] + 1
+                    else:
+                        offset = 0
 
-                    pred_with_z = [output.decoder_hidden_states[-1].squeeze() for output in outputs]
+                    z = torch.gather(
+                        outputs.decoder_hidden_states[-1], dim=1,
+                        index=batched_target_idxs.unsqueeze(-1).expand(-1, -1, model.config.d_model) + offset # d_model == 1024  # TODO we need one further step, because of an additional token at the beginning
+                    )  # is equivalent to: outputs.decoder_hidden_states[-1][:, a:b, :] where a:b is the slice given by batched_target_idxs
 
-                    sum_loss = 0.0
-                    for p, t in zip(pred_with_z, batched_vec_targets_list):
-                        #padding_mask = (t != 1).float()  # padding tokens should be ignored
-                        sum_loss += loss_fct(p, t) #/ padding_mask.sum()
-                    loss = sum_loss / len(pred_with_z)
-                    #loss = loss_fct(pred_with_z, batched_vec_targets) / padding_mask.sum()
-                    losses.append(float(loss))
-                    print("\n" + str([tokenizer.batch_decode(o) for o in output_ids]))
+                    loss = loss_fct(z, batched_vec_targets)
+                    loss_bar.n = float(loss)
+                    loss_bar.refresh()
+                    #print("\n" + str(tokenizer.batch_decode(
+                    #    output_ids[:, torch.min(batched_target_idxs+offset):torch.max(batched_target_idxs)+offset+1]
+                    #)))#, "->", tokenizer.batch_decode(output_ids))
 
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                     model.model.encoder.embed_tokens.weight.grad[indices] = 0
                     optimizer.step()
                     scheduler.step()
-                loss_bar.n = mean(losses)
-                loss_bar.refresh()
 
         # get the z* for classification
         vec = model.model.shared.weight.data[-1]  # == model.model.encoder.embed_tokens.weight.data[-1]  # this is z*
@@ -304,7 +396,7 @@ class Coercion:
         np.save(CACHE + f"temp_z_arrays_mbart_{temp}.npy", np.array(z_list))
         np.save(CACHE + f"temp_loss_arrays_mbart_{temp}.npy", np.array(loss_list))
 
-        s = '\n\nFinal loss = {a}'.format(a=str(loss.cpu().detach().numpy()))
+        s = '\n\nFinal loss = {a}'.format(a=str(loss.cpu().detach().numpy())) + f"\n(Number of removed sentences: {removed})"
         print(s)
 
         return model
@@ -317,7 +409,11 @@ class Coercion:
             input_ids = input_ids.to(device)
             outputs = model(input_ids=input_ids, output_hidden_states=True, return_dict=True)  # labels are shifted right automatically
             output_ids = outputs.logits.argmax(dim=-1)
-        return outputs.decoder_hidden_states[-1]
+            # get all indices that are part of the KEE; slice is needed for converting the tuple to a slice
+            target_slice = gather_indexes.eq(target[1]).nonzero()
+            target_slice = slice(target_slice.min(), target_slice.max()+1)  # TODO <s> Vor Input hinzugefügt...
+            x_target = outputs.decoder_hidden_states[-1][:, target_slice]  # slice müsste 5,6,7 sein
+        return x_target
 
     def _freeze(self, model):
         # Freeze all the parameters except the word embeddings
@@ -451,33 +547,40 @@ if __name__ == '__main__':
     # bug fix for <mask> token
     mask_addedtoken = AddedToken('<mask>', single_word=False, lstrip=True, rstrip=True, normalized=True)
     tokenizer.add_tokens(mask_addedtoken)
+    # converted = convert_slow_tokenizer(tokenizer)
+    # tokenizer = transformers.PreTrainedTokenizerFast(tokenizer_object=converted)
+
 
     builder = DataBuilder(tokenizer)
     co = Coercion(builder, batch_size)
 
     start = args.start
     end = args.end
+    #if args.use_checkpoint:
+    #    start = len(z_list) // 5
+    #    assert len(z_list) % 5 == 0
+    #    assert start < end
 
     print(f"Started at construction number {start}.")
     i = start
     for group in tqdm(data[start:end], initial=start, total=len(data),
                       desc="Construction", position=0, leave=True):
-        #try:
-        print(i, group[0]["label"])
+        try:
+            print(i, group[0]["label"])
 
-        co.coercion(i, group)  # , devices)
-        print('==' * 40)
-        result = get_lowest_loss_arrays(z_list, loss_list)
+            co.coercion(i, group)  # , devices)
+            print('==' * 40)
+            result = get_lowest_loss_arrays(z_list, loss_list)
 
-        # save the pseudowords
-        np.save(DIR_OUT + f'pseudowords_comapp_{start}_{end}.npy', result)
+            # save the pseudowords
+            np.save(DIR_OUT + f'pseudowords_comapp_{start}_{end}.npy', result)
 
-        with open(DIR_OUT + f"order_{temp}.csv", "a+") as order_file:
-            order_file.write(f"{i};" + group[0]["label"] + "\n")
+            with open(DIR_OUT + f"order_{temp}.csv", "a+") as order_file:
+                order_file.write(f"{i};" + group[0]["label"] + "\n")
 
-        #except Exception as e:
-        #    if type(e) != KeyboardInterrupt:
-        #        print(f"Construction with index {i} threw an error!\n", e, "\n")
+        except Exception as e:
+            if type(e) != KeyboardInterrupt:
+                print(f"Construction with index {i} threw an error!\n", e, "\n")
         i += 1
 
     result = get_lowest_loss_arrays(z_list, loss_list)

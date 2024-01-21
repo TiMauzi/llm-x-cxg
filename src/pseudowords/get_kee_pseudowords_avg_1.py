@@ -29,19 +29,18 @@ logging.basicConfig(
 
 from transformers.convert_slow_tokenizer import MBart50Converter, convert_slow_tokenizer
 
-NEW_TOKEN = AddedToken('#TOKEN#', single_word=False, lstrip=True, rstrip=True, normalized=False)
+NEW_TOKEN = AddedToken('#TOKEN#', single_word=False, lstrip=True, rstrip=True, normalized=True)
 
 Item = Tuple[str, int]
 Example = Tuple[Item, Item]
 
 # ARGS
-QUERIES_PATH = "../../data/pseudowords/CoMaPP_all_test.json"  # path to queries
+QUERIES_PATH = "../../data/pseudowords/CoMaPP_all.json"  # path to queries
 DATASET_PATH = "../../data/pseudowords/CoMapp_Dataset.csv"
 DIR_OUT = "../../out/"  # path to dir to save the pseudowords
 CACHE = "../../out/cache/"  # path to cach directory
 
 device = "cuda"
-
 
 ################################################
 
@@ -72,20 +71,30 @@ class DataBuilder:
         self.tokenizer = tokenizer
 
     def encode(self, text: str, max_length=None):
-        tokens = text.split()
+        tokens = text.split()  # ["</s>"] + text.split() + ["</s>", "de_DE"]
+        # Build token indices
+        # _, gather_indexes = self._manual_tokenize(tokens)
+        # -> will soon be in encode_dict.word_ids()
+        # Tokenization
+
         if max_length:
             # Note by huggingface:
             #  "We strongly recommend passing in an `attention_mask` since your input_ids may be padded."
             encode_dict = self.tokenizer(
                 tokens, return_attention_mask=True,
                 return_token_type_ids=False, return_tensors='pt',
-                padding='max_length', max_length=max_length, is_split_into_words=True, add_special_tokens=False)
+                padding='max_length', max_length=max_length, is_split_into_words=True)
         else:
             encode_dict = self.tokenizer(
                 tokens, return_attention_mask=True,
-                return_token_type_ids=False, return_tensors='pt', is_split_into_words=True, add_special_tokens=False)
+                return_token_type_ids=False, return_tensors='pt', is_split_into_words=True)
+        # encode_dict["input_ids"] = torch.cat((torch.tensor([[2, 0]]), encode_dict['input_ids'][:, 1:]), dim=-1)  # </s> <s> must be added manually
+        # encode_dict["attention_mask"] = torch.ones_like(encode_dict["input_ids"])
         input_ids = encode_dict['input_ids']
 
+        # The list of word ids for each token is needed. This is only available for "TokenizerFast", so we need to
+        # convert the Tokenizer!
+        # Usually Tokenizer and TokenizerFast are equivalent, but currently they aren't for MBart50...
         gather_indexes = encode_dict.word_ids()
         gather_indexes = [-1 if w is None else w for w in gather_indexes]
         gather_indexes = torch.tensor(gather_indexes)
@@ -128,8 +137,8 @@ class Coercion:
         # Print targets (and their ids) and the query (and its id)
         for entry in group:
             # The inputs need to be tweaked slightly in order to work with BART's index shift:
-            entry["target1"] = "<s> " + entry["target1"] + " </s> de_DE"
-            entry["query"] = "<s> " + entry["query"] + " </s> de_DE"
+            entry["target1"] = "<s> " + entry["target1"]
+            entry["query"] = "<s> " + entry["query"]
             entry["target1_idx"] += 1
             entry["query_idx"] += 1
 
@@ -139,8 +148,7 @@ class Coercion:
             # We need a Text2TextGeneration here, because mBart is created for translation, originally.
             # Only this way, there can be multiple predicted words for one <mask>.
             nlp = Text2TextGenerationPipeline(model=model, tokenizer=self.builder.tokenizer, device=device)
-            output = nlp(entry["query"], max_length=int(len(entry["target1"]) * 1.5), num_return_sequences=5,
-                         num_beams=20)
+            output = nlp(entry["query"], max_length=int(len(entry["target1"]) * 1.5), num_return_sequences=5, num_beams=20)
             output = self._format(output)
             print(f"output: {output}")
 
@@ -191,11 +199,9 @@ class Coercion:
                 target_length = len(new_query) - 1 + token_length  # length of new query - #TOKEN# + target token
 
                 outputs = tokenizer(new_query, return_tensors="pt").to("cpu")
-                outputs = model.to("cpu").generate(outputs["input_ids"], max_length=target_length,
-                                                   num_return_sequences=5,
-                                                   num_beams=20, output_scores=True, return_dict_in_generate=True)
-                output_strings = tokenizer.batch_decode(outputs.sequences,
-                                                        clean_up_tokenization_spaces=True)  # , skip_special_tokens=True)
+                outputs = model.to("cpu").generate(outputs["input_ids"], max_length=target_length, num_return_sequences=5,
+                                         num_beams=20, output_scores=True, return_dict_in_generate=True)
+                output_strings = tokenizer.batch_decode(outputs.sequences, clean_up_tokenization_spaces=True)#, skip_special_tokens=True)
                 output_probs = torch.exp(outputs.sequences_scores)
 
                 print([f'output: {output}, score: {score}'
@@ -207,8 +213,8 @@ class Coercion:
 
     def _train(self, model, vec_targets, queries, targets1):
         loss_fct = nn.MSELoss(reduction='mean')  # mean will be computed later
-        optimizer = torch.optim.AdamW(model.parameters(), lr=0.00035)
-        epoch = 5000 // len(queries)  # 1000 == 5000//5 was the default for BERT
+        optimizer = torch.optim.AdamW(model.parameters(), lr=0.3)
+        epoch = 5000 // len(queries)  # 1000==5000//5 was the default for BERT; but 400 may be enough to practically minimize the loss
         scheduler = get_linear_schedule_with_warmup(
             optimizer,
             num_warmup_steps=0,
@@ -231,24 +237,15 @@ class Coercion:
         labels_and_gather_indexes = [self.builder.encode(target1[0], max_length=max_labels_length)
                                      for target1 in targets1]
         labels = torch.cat([label for label in [lab for lab, _ in labels_and_gather_indexes]], dim=0).to(device)
-        gather_indexes = [g for _, g in labels_and_gather_indexes]
 
         # Stack and pad targets:
         # vec_targets = torch.stack(vec_targets).squeeze(1)
-        vec_target_lengths = [t.shape[1] for t in vec_targets]
+        lengths = [t.shape[1] for t in vec_targets]
         vec_targets = torch.nn.utils.rnn.pad_sequence([vec_target.squeeze() for vec_target in vec_targets],
                                                       batch_first=True, padding_value=1)
-        #reversed_vec_targets = [torch.flip(vec_target.squeeze(), dims=[0]) for vec_target in vec_targets]
-        #padded_sequences_right = torch.nn.utils.rnn.pad_sequence(reversed_vec_targets, batch_first=True,
-        #                                                         padding_value=1)
-        #vec_targets = torch.flip(padded_sequences_right, dims=[1])
 
-        z_lengths = [g.eq(t[1]).sum().item() for g, t in zip(gather_indexes, targets1)]
-
-        dataloader = torch.utils.data.DataLoader(
-            list(zip(input_ids, labels, vec_targets, vec_target_lengths, z_lengths)),
-            batch_size=self.batch_size
-        )
+        dataloader = torch.utils.data.DataLoader(list(zip(input_ids, labels, vec_targets, lengths)),
+                                                 batch_size=self.batch_size)
 
         indices = torch.tensor(
             [i for i in range(len(tokenizer)) if i < tokenizer.convert_tokens_to_ids(NEW_TOKEN.content)],
@@ -256,72 +253,58 @@ class Coercion:
         )
         # model.train()
 
-        losses = []
-        mean_loss = 0.0
-        with tqdm(total=100, desc="Train Loss", position=2, disable=True) as loss_bar:
-            with trange(epoch, position=1, desc="Epoch", leave=True, disable=False) as epoch_bar:
-            #for _ in trange(epoch, position=1, desc="Epoch", leave=True, disable=False):
-                for _ in epoch_bar:
-                    for batched_input_ids, batched_labels, batched_vec_targets, \
-                            batched_vec_target_lengths, batched_z_lengths in dataloader:
-                        optimizer.zero_grad()
+        with (tqdm(total=6, desc="Train Loss", position=2, disable=False) as loss_bar):
+            losses = []
+            for _ in trange(epoch, position=1, desc="Epoch", leave=True, disable=False):
+                for batched_input_ids, batched_labels, batched_vec_targets, batched_lengths in dataloader:
+                    optimizer.zero_grad()
 
-                        outputs = model(input_ids, output_hidden_states=True, labels=batched_labels)
-                        output_ids = outputs.logits.argmax(dim=-1)
+                    batched_vec_targets_list = torch.nn.utils.rnn.unpad_sequence(
+                        batched_vec_targets, batch_first=True, lengths=batched_lengths
+                    )
+                    batched_input_ids_list = torch.nn.utils.rnn.unpad_sequence(
+                        batched_input_ids, batch_first=True, lengths=batched_lengths
+                    )
+                    batched_labels_list = torch.nn.utils.rnn.unpad_sequence(
+                        batched_labels, batch_first=True, lengths=batched_lengths
+                    )
 
-                        offsets = torch.tensor([
-                            batched_labels[d].shape[-1] - output_ids[d].shape[-1] + 1
-                            if decoded.index("<mask>") < decoded.index("#TOKEN#") else 0
-                            for d, decoded in enumerate(tokenizer.batch_decode(batched_input_ids))
-                        ], device=device).unsqueeze(-1).repeat(1, 3)
+                    outputs = [
+                        model(i.unsqueeze(0), output_hidden_states=True, labels=lab.unsqueeze(0)) # TODO
+                        for i, lab in zip(batched_input_ids_list, batched_labels_list)
+                    ]
+                    output_ids = [output.logits.argmax(dim=-1) for output in outputs]
 
-                        # Idea taken from here:
-                        # https://huggingface.co/docs/transformers/model_doc/mbart#transformers.MBartForConditionalGeneration.forward.example-2
-                        z_idxs = torch.stack([
-                            torch.arange(
-                                (i == torch.tensor(tokenizer.convert_tokens_to_ids(NEW_TOKEN.content))).nonzero().item(),
-                                ((i == torch.tensor(tokenizer.convert_tokens_to_ids(NEW_TOKEN.content))).nonzero().item()
-                                 + z_length)
-                            )
-                            for i, z_length in zip(batched_input_ids, z_lengths)
-                        ]).to(device)
+                    pred_with_z = [output.decoder_hidden_states[-1].squeeze() for output in outputs]
 
-                        z_pred_idxs = z_idxs + offsets
-                        z_pred_tokens = torch.gather(output_ids, -1, z_pred_idxs)
-                        z_targets = torch.gather(batched_vec_targets, 1, z_idxs.unsqueeze(-1)
-                                                 .repeat(1, 1, model.config.d_model))
-                        z_preds = torch.gather(outputs.decoder_hidden_states[-1], 1, z_pred_idxs.unsqueeze(-1)
-                                               .repeat(1, 1, model.config.d_model))
+                    sum_loss = 0.0
+                    for p, t in zip(pred_with_z, batched_vec_targets_list):
+                        #padding_mask = (t != 1).float()  # padding tokens should be ignored
+                        sum_loss += loss_fct(p, t) #/ padding_mask.sum()
+                    loss = sum_loss / len(pred_with_z)
+                    #loss = loss_fct(pred_with_z, batched_vec_targets) / padding_mask.sum()
+                    losses.append(float(loss))
+                    print("\n" + str([tokenizer.batch_decode(o) for o in output_ids]))
 
-                        sum_loss = 0.0
-                        for p, t, z_l in zip(z_preds, z_targets, z_lengths):
-                                sum_loss += loss_fct(p, t) * z_l
-                        loss = sum_loss / len(z_preds)  # get the mean of all losses
-                        losses.append(float(loss))
-                        predictions = [(tokenizer.decode(z), tokenizer.decode(o)) for z, o in zip(z_pred_tokens, output_ids)]
-                        # print("\n" + str(predictions))
-                        epoch_bar.set_postfix({"loss": mean_loss, "pred": predictions[0][0]})
-
-                        loss.backward()
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                        model.model.encoder.embed_tokens.weight.grad[indices] = 0
-                        optimizer.step()
-                        scheduler.step()
-                    mean_loss = mean(losses)
-                    loss_bar.n = mean_loss
-                    loss_bar.refresh()
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    model.model.encoder.embed_tokens.weight.grad[indices] = 0
+                    optimizer.step()
+                    scheduler.step()
+                loss_bar.n = mean(losses)
+                loss_bar.refresh()
 
         # get the z* for classification
         vec = model.model.shared.weight.data[-1]  # == model.model.encoder.embed_tokens.weight.data[-1]  # this is z*
         vec_array = vec.cpu().detach().numpy()
         z_list.append(vec_array)
-        loss_list.append(str(mean_loss))
+        loss_list.append(str(loss.cpu().detach().numpy()))
 
         # save checkpoints
         np.save(CACHE + f"temp_z_arrays_mbart_{temp}.npy", np.array(z_list))
         np.save(CACHE + f"temp_loss_arrays_mbart_{temp}.npy", np.array(loss_list))
 
-        s = f'\n\nFinal loss = {mean_loss}'
+        s = '\n\nFinal loss = {a}'.format(a=str(loss.cpu().detach().numpy()))
         print(s)
 
         return model
@@ -332,8 +315,7 @@ class Coercion:
         with torch.no_grad():
             # Find the learning target x
             input_ids = input_ids.to(device)
-            outputs = model(input_ids=input_ids, output_hidden_states=True,
-                            return_dict=True)  # labels are shifted right automatically
+            outputs = model(input_ids=input_ids, output_hidden_states=True, return_dict=True)  # labels are shifted right automatically
             output_ids = outputs.logits.argmax(dim=-1)
         return outputs.decoder_hidden_states[-1]
 
@@ -465,12 +447,10 @@ if __name__ == '__main__':
     data = [list(group) for _, group in itertools.groupby(data, key=lambda x: x["label"])]
 
     tokenizer = MBart50TokenizerFast.from_pretrained("facebook/mbart-large-50",
-                                                     src_lang="de_DE",
-                                                     tgt_lang="de_DE")  # MBart50Tokenizer.from_pretrained("facebook/mbart-large-50", src_lang="de_DE", tgt_lang="de_DE")
+                                                     src_lang="de_DE", tgt_lang="de_DE") # MBart50Tokenizer.from_pretrained("facebook/mbart-large-50", src_lang="de_DE", tgt_lang="de_DE")
     # bug fix for <mask> token
     mask_addedtoken = AddedToken('<mask>', single_word=False, lstrip=True, rstrip=True, normalized=True)
     tokenizer.add_tokens(mask_addedtoken)
-    # tokenizer.padding_side = "left"
 
     builder = DataBuilder(tokenizer)
     co = Coercion(builder, batch_size)
@@ -482,7 +462,7 @@ if __name__ == '__main__':
     i = start
     for group in tqdm(data[start:end], initial=start, total=len(data),
                       desc="Construction", position=0, leave=True):
-        # try:
+        #try:
         print(i, group[0]["label"])
 
         co.coercion(i, group)  # , devices)
@@ -495,7 +475,7 @@ if __name__ == '__main__':
         with open(DIR_OUT + f"order_{temp}.csv", "a+") as order_file:
             order_file.write(f"{i};" + group[0]["label"] + "\n")
 
-        # except Exception as e:
+        #except Exception as e:
         #    if type(e) != KeyboardInterrupt:
         #        print(f"Construction with index {i} threw an error!\n", e, "\n")
         i += 1

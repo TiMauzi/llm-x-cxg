@@ -30,7 +30,7 @@ logging.basicConfig(
 
 from transformers.convert_slow_tokenizer import MBart50Converter, convert_slow_tokenizer
 
-NEW_TOKEN = AddedToken('#TOKEN#', single_word=True, lstrip=True, rstrip=True, normalized=False)
+NEW_TOKEN = AddedToken('#TOKEN#', single_word=False, lstrip=True, rstrip=True, normalized=False)
 
 Item = Tuple[str, int]
 Example = Tuple[Item, Item]

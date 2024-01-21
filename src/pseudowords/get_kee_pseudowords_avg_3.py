@@ -207,7 +207,7 @@ class Coercion:
 
     def _train(self, model, vec_targets, queries, targets1):
         loss_fct = nn.MSELoss(reduction='mean')  # mean will be computed later
-        optimizer = torch.optim.AdamW(model.parameters(), lr=0.1)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=0.00035)
         epoch = 5000 // len(
             queries)  # 1000==5000//5 was the default for BERT; but 400 may be enough to practically minimize the loss
         scheduler = get_linear_schedule_with_warmup(
@@ -255,74 +255,60 @@ class Coercion:
 
         losses = []
         mean_loss = 0.0
-        with tqdm(total=6, desc="Train Loss", position=2, disable=False) as loss_bar:
+        with tqdm(total=100, desc="Train Loss", position=2, disable=False) as loss_bar:
             for _ in trange(epoch, position=1, desc="Epoch", leave=True, disable=False):
                 for batched_input_ids, batched_labels, batched_vec_targets, \
                         batched_vec_target_lengths, batched_z_lengths in dataloader:
                     optimizer.zero_grad()
 
-                    batched_vec_targets_list = torch.nn.utils.rnn.unpad_sequence(
-                        batched_vec_targets, batch_first=True, lengths=batched_vec_target_lengths
-                    )
-                    batched_input_ids_list = torch.nn.utils.rnn.unpad_sequence(
-                        batched_input_ids, batch_first=True, lengths=batched_vec_target_lengths
-                    )
-                    batched_labels_list = torch.nn.utils.rnn.unpad_sequence(
-                        batched_labels, batch_first=True, lengths=batched_vec_target_lengths
-                    )
+                    # batched_vec_targets_list = torch.nn.utils.rnn.unpad_sequence(
+                    #     batched_vec_targets, batch_first=True, lengths=batched_vec_target_lengths
+                    # )
+                    # batched_input_ids_list = torch.nn.utils.rnn.unpad_sequence(
+                    #     batched_input_ids, batch_first=True, lengths=batched_vec_target_lengths
+                    # )
+                    # batched_labels_list = torch.nn.utils.rnn.unpad_sequence(
+                    #     batched_labels, batch_first=True, lengths=batched_vec_target_lengths
+                    # )
 
-                    outputs = [
-                        model(i.unsqueeze(0), output_hidden_states=True, labels=lab.unsqueeze(0))
-                        for i, lab in zip(batched_input_ids_list, batched_labels_list)
-                    ]
-                    output_ids = [output.logits.argmax(dim=-1) for output in outputs]
+                    outputs = model(input_ids, output_hidden_states=True, labels=batched_labels)
+                    output_ids = outputs.logits.argmax(dim=-1)
 
-                    offsets = [
-                        batched_labels_list[d].shape[-1] - output_ids[d].shape[-1] + 1
+                    offsets = torch.tensor([
+                        batched_labels[d].shape[-1] - output_ids[d].shape[-1] + 1
                         if decoded.index("<mask>") < decoded.index("#TOKEN#") else 0
-                        for d, decoded in enumerate(tokenizer.batch_decode(batched_input_ids_list))
-                    ]
+                        for d, decoded in enumerate(tokenizer.batch_decode(batched_input_ids))
+                    ], device=device).unsqueeze(-1).repeat(1, 3)
 
                     # Idea taken from here:
                     # https://huggingface.co/docs/transformers/model_doc/mbart#transformers.MBartForConditionalGeneration.forward.example-2
-                    z_idxs = [
-                        slice(
+                    z_idxs = torch.stack([
+                        torch.arange(
                             (i == torch.tensor(tokenizer.convert_tokens_to_ids(NEW_TOKEN.content))).nonzero().item(),
                             ((i == torch.tensor(tokenizer.convert_tokens_to_ids(NEW_TOKEN.content))).nonzero().item()
                              + z_length)
                         )
-                        for i, z_length in zip(batched_input_ids_list, z_lengths)
-                    ]
+                        for i, z_length in zip(batched_input_ids, z_lengths)
+                    ]).to(device)
 
                     # TODO Ergänze Länge des Tokens (Intervall statt Skalarwert als Index)
-                    z_pred_idxs = [
-                        slice(z_idx.start + offset, z_idx.stop + offset)
-                        for (z_idx, offset, z_length)
-                        in zip(z_idxs, offsets, batched_z_lengths)
-                    ]
+                    z_pred_idxs = z_idxs + offsets
 
-                    z_pred_tokens = [
-                        output.logits[0, z_pred_idx].argmax(dim=-1)
-                        for output, z_pred_idx in zip(outputs, z_pred_idxs)
-                    ]
+                    z_pred_tokens = torch.gather(output_ids, -1, z_pred_idxs)
 
-                    z_targets = [
-                        batched_vec_target[z_idx]
-                        for batched_vec_target, z_idx in zip(batched_vec_targets_list, z_idxs)
-                    ]
+                    z_targets = torch.gather(batched_vec_targets, 1, z_idxs.unsqueeze(-1)
+                                             .repeat(1, 1, model.config.d_model))
 
-                    z_preds = [
-                        output.decoder_hidden_states[-1].squeeze()[z_pred_idx]
-                        for output, z_pred_idx in zip(outputs, z_pred_idxs)
-                    ]
+                    z_preds = torch.gather(outputs.decoder_hidden_states[-1], 1, z_pred_idxs.unsqueeze(-1)
+                                           .repeat(1, 1, model.config.d_model))
 
                     sum_loss = 0.0
                     for p, t, z_l in zip(z_preds, z_targets, z_lengths):
-                        sum_loss += loss_fct(p, t) * z_l  # / padding_mask.sum()
+                            sum_loss += loss_fct(p, t) * z_l  # / padding_mask.sum()
                     loss = sum_loss / len(z_preds)  # get the mean of all losses
                     losses.append(float(loss))
                     print("\n" + str(
-                        [(tokenizer.decode(z), tokenizer.batch_decode(o)) for z, o in zip(z_pred_tokens, output_ids)]))
+                        [(tokenizer.decode(z), " ".join(tokenizer.batch_decode(o))) for z, o in zip(z_pred_tokens, output_ids)]))
 
                     loss.backward()
                     torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)

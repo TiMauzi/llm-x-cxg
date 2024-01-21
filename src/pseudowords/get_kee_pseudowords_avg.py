@@ -449,7 +449,7 @@ def get_lowest_loss_arrays(z_list, loss_list):
 
 if __name__ == '__main__':
     setup_seed(15)
-    batch_size = 2
+    batch_size = 4
     parser = argparse.ArgumentParser()
     parser.add_argument('--device', default="cuda", type=str, required=False, help='Task ID for the current task')
     parser.add_argument('--start', default=0, type=int, required=False, help='Which construction to start with')

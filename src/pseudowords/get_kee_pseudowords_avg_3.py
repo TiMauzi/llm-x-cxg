@@ -266,16 +266,6 @@ class Coercion:
                             batched_vec_target_lengths, batched_z_lengths in dataloader:
                         optimizer.zero_grad()
 
-                        # batched_vec_targets_list = torch.nn.utils.rnn.unpad_sequence(
-                        #     batched_vec_targets, batch_first=True, lengths=batched_vec_target_lengths
-                        # )
-                        # batched_input_ids_list = torch.nn.utils.rnn.unpad_sequence(
-                        #     batched_input_ids, batch_first=True, lengths=batched_vec_target_lengths
-                        # )
-                        # batched_labels_list = torch.nn.utils.rnn.unpad_sequence(
-                        #     batched_labels, batch_first=True, lengths=batched_vec_target_lengths
-                        # )
-
                         outputs = model(input_ids, output_hidden_states=True, labels=batched_labels)
                         output_ids = outputs.logits.argmax(dim=-1)
 
@@ -296,20 +286,16 @@ class Coercion:
                             for i, z_length in zip(batched_input_ids, z_lengths)
                         ]).to(device)
 
-                        # TODO Ergänze Länge des Tokens (Intervall statt Skalarwert als Index)
                         z_pred_idxs = z_idxs + offsets
-
                         z_pred_tokens = torch.gather(output_ids, -1, z_pred_idxs)
-
                         z_targets = torch.gather(batched_vec_targets, 1, z_idxs.unsqueeze(-1)
                                                  .repeat(1, 1, model.config.d_model))
-
                         z_preds = torch.gather(outputs.decoder_hidden_states[-1], 1, z_pred_idxs.unsqueeze(-1)
                                                .repeat(1, 1, model.config.d_model))
 
                         sum_loss = 0.0
                         for p, t, z_l in zip(z_preds, z_targets, z_lengths):
-                                sum_loss += loss_fct(p, t) * z_l  # / padding_mask.sum()
+                                sum_loss += loss_fct(p, t) * z_l
                         loss = sum_loss / len(z_preds)  # get the mean of all losses
                         losses.append(float(loss))
                         predictions = [(tokenizer.decode(z), tokenizer.decode(o)) for z, o in zip(z_pred_tokens, output_ids)]

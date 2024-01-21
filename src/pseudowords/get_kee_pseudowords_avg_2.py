@@ -286,12 +286,12 @@ class Coercion:
                     # Idea taken from here:
                     # https://huggingface.co/docs/transformers/model_doc/mbart#transformers.MBartForConditionalGeneration.forward.example-2
                     z_idxs = [
-                        slice(
+                        torch.arange(
                             (i == torch.tensor(tokenizer.convert_tokens_to_ids(NEW_TOKEN.content))).nonzero().item(),
                             ((i == torch.tensor(tokenizer.convert_tokens_to_ids(NEW_TOKEN.content))).nonzero().item()
-                             + z_length)
+                             + z_length.item())
                         )
-                        for i, z_length in zip(batched_input_ids_list, z_lengths)
+                        for i, z_length in zip(batched_input_ids_list, batched_z_lengths)
                     ]
 
                     # TODO Ergänze Länge des Tokens (Intervall statt Skalarwert als Index)

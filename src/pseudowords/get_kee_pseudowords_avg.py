@@ -254,7 +254,7 @@ class Coercion:
         #                                                         padding_value=1)
         #vec_targets = torch.flip(padded_sequences_right, dims=[1])
 
-        z_lengths = [g.eq(t[1]).sum().item() for g, t in zip(gather_indexes, targets1)]
+        z_lengths = torch.tensor([[g.eq(t[1]).sum().item()] for g, t in zip(gather_indexes, targets1)], device=device)
 
         dataloader = torch.utils.data.DataLoader(
             list(zip(input_ids, labels, vec_targets, vec_target_lengths, z_lengths)),
@@ -278,24 +278,25 @@ class Coercion:
                             batched_vec_target_lengths, batched_z_lengths in dataloader:
                         optimizer.zero_grad()
 
-                        outputs = model(input_ids, output_hidden_states=True, labels=batched_labels)
+                        outputs = model(batched_input_ids, output_hidden_states=True, labels=batched_labels)
                         output_ids = outputs.logits.argmax(dim=-1)
 
                         offsets = torch.tensor([
                             batched_labels[d].shape[-1] - output_ids[d].shape[-1] + 1
                             if decoded.index("<mask>") < decoded.index("#TOKEN#") else 0
                             for d, decoded in enumerate(tokenizer.batch_decode(batched_input_ids))
-                        ], device=device).unsqueeze(-1).repeat(1, 3)
+                        ], device=device).unsqueeze(-1)
 
                         # Idea taken from here:
                         # https://huggingface.co/docs/transformers/model_doc/mbart#transformers.MBartForConditionalGeneration.forward.example-2
                         z_idxs = torch.stack([
                             torch.arange(
-                                (i == torch.tensor(tokenizer.convert_tokens_to_ids(NEW_TOKEN.content))).nonzero().item(),
-                                ((i == torch.tensor(tokenizer.convert_tokens_to_ids(NEW_TOKEN.content))).nonzero().item()
-                                 + z_length)
+                                (i == torch.tensor(
+                                    tokenizer.convert_tokens_to_ids(NEW_TOKEN.content))).nonzero().item(),
+                                (i == torch.tensor(tokenizer.convert_tokens_to_ids(
+                                    NEW_TOKEN.content))).nonzero().item() + z_length.item()
                             )
-                            for i, z_length in zip(batched_input_ids, z_lengths)
+                            for i, z_length in zip(batched_input_ids, batched_z_lengths)
                         ]).to(device)
 
                         z_pred_idxs = z_idxs + offsets
@@ -306,8 +307,8 @@ class Coercion:
                                                .repeat(1, 1, model.config.d_model))
 
                         sum_loss = 0.0
-                        for p, t, z_l in zip(z_preds, z_targets, z_lengths):
-                                sum_loss += loss_fct(p, t) * z_l
+                        for p, t, z_l in zip(z_preds, z_targets, batched_z_lengths):
+                                sum_loss += loss_fct(p, t) * z_l.item()
                         loss = sum_loss / len(z_preds)  # get the mean of all losses
                         losses.append(float(loss))
                         predictions = [(tokenizer.decode(z), tokenizer.decode(o)) for z, o in zip(z_pred_tokens, output_ids)]
@@ -448,7 +449,7 @@ def get_lowest_loss_arrays(z_list, loss_list):
 
 if __name__ == '__main__':
     setup_seed(15)
-    batch_size = 4
+    batch_size = 2
     parser = argparse.ArgumentParser()
     parser.add_argument('--device', default="cuda", type=str, required=False, help='Task ID for the current task')
     parser.add_argument('--start', default=0, type=int, required=False, help='Which construction to start with')

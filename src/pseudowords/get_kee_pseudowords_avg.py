@@ -18,7 +18,6 @@ import jsonlines
 import json
 import numpy as np
 import os
-#import matplotlib.pyplot as plt
 
 logging_handlers = [logging.StreamHandler(sys.stdout)]
 logging.basicConfig(
@@ -183,16 +182,6 @@ class Coercion:
             print("*************************************************************************")
             print('After training:')
 
-            #plt.plot(losses)
-            #plt.xlabel("Epochen")
-            #plt.ylabel("Loss")
-
-            #import tikzplotlib
-
-            #tikzplotlib.save(f"{document_path}{group_no}.tex")
-            #plt.show()
-            #plt.close()
-
             # For determining the original token's length, you take a random (the first) target, whitespace-tokenize it
             # and extract the token string. Then you tokenize it using the tokenizer. You can then count the input_ids,
             # ignoring the first id and the final id.
@@ -236,7 +225,7 @@ class Coercion:
         input_ids_and_gather_indexes = [self.builder.encode(query[0], max_length=max_length) for query in queries]
         input_ids = torch.cat([input_id for input_id in [i for i, _ in input_ids_and_gather_indexes]], dim=0).to(device)
 
-        # This is needed for computing the loss. This is because mBart is a generative model unlike Bert, so
+        # This is needed for computing the loss. mBart is a generative model unlike Bert, so
         # the decoder needs the solution during training time. It also needs to be shifted right
         # (happens automatically here).
         labels_and_gather_indexes = [self.builder.encode(target1[0], max_length=max_labels_length)
@@ -244,15 +233,9 @@ class Coercion:
         labels = torch.cat([label for label in [lab for lab, _ in labels_and_gather_indexes]], dim=0).to(device)
         gather_indexes = [g for _, g in labels_and_gather_indexes]
 
-        # Stack and pad targets:
-        # vec_targets = torch.stack(vec_targets).squeeze(1)
         vec_target_lengths = [t.shape[1] for t in vec_targets]
         vec_targets = torch.nn.utils.rnn.pad_sequence([vec_target.squeeze() for vec_target in vec_targets],
                                                       batch_first=True, padding_value=1)
-        #reversed_vec_targets = [torch.flip(vec_target.squeeze(), dims=[0]) for vec_target in vec_targets]
-        #padded_sequences_right = torch.nn.utils.rnn.pad_sequence(reversed_vec_targets, batch_first=True,
-        #                                                         padding_value=1)
-        #vec_targets = torch.flip(padded_sequences_right, dims=[1])
 
         z_lengths = torch.tensor([[g.eq(t[1]).sum().item()] for g, t in zip(gather_indexes, targets1)], device=device)
 

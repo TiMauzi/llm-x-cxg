@@ -1,5 +1,7 @@
 ## 🕵️‍♀️ `pseudowords` &ndash; generate and train pseudoword embeddings
 
+![Banner](../../misc/training.gif)
+
 * `get_bsb_bert_kee_pseudowords_avg.py` → Generate pseudowords for German BERT (using the version by the Bavarian State Library)
 * `get_kee_pseudowords_avg.py` → Generate pseudowords for mBART-50
 

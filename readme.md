@@ -1,11 +1,9 @@
 # 🦙 `llm-x-cxg`: Language Models and Construction Grammar 📖
 ## 🏭 Text Generation and Construction Detection 👀
 
-![banner](misc/training.gif)
-
 ---
 
-[![Static Badge](https://zenodo.org/badge/DOI/10.5281/zenodo.10957260.svg)](https://doi.org/10.5281/zenodo.10957260/)
+[![Static Badge](https://zenodo.org/badge/DOI/10.5281/zenodo.10957260.svg)](https://doi.org/10.5281/zenodo.10957259/)
 [![Static Badge](https://img.shields.io/badge/license-CC--4.0--BY-lightgrey.svg)](https://creativecommons.org/licenses/by/4.0/legalcode)
 
 This repository contains code and output data from probing and experimenting with construction grammar (CxG) and large
@@ -20,14 +18,28 @@ For citation of this work, please see the BibLaTeX snippet below.
 
 ---
 
+### 💡 Abstract from the Thesis
+
+> Construction Grammar aims to combine linguistic features such as syntax, semantics, and lexis, thereby analysing 
+language holistically. Large language models (also known as LLMs) pursue a similar approach. They claim to grasp language 
+features by using massive amounts of data and computational processing power. This thesis investigates joint approaches, 
+targeting an optimization regarding the quality of natural language understanding (NLU). Hence, two main tasks are 
+postulated: (a) the detection of language phenomena by means of finding instances for predefined constructions in 
+corpora and (b) generating novel examples based on construction definition. In order to do so, LLMs like 
+[Llama 2](https://huggingface.co/docs/transformers/model_doc/llama2), 
+[BERT](https://huggingface.co/docs/transformers/model_doc/bert), 
+and [mBART](https://huggingface.co/docs/transformers/model_doc/mbart) are compared and extended. To these models, 
+concepts of few-shot learning and pseudoword embeddings are 
+applied. The proposed ideas are analysed, then implemented, and finally evaluated both automatically and manually.
+
+
 ### 🤔 Usage
 
-In case you want to run any of the code provided, feel free to install the necessary dependencies using `conda`:
+In case you want to run any of the code provided, feel free to install the necessary dependencies using `conda`.
 ```shell
 conda create --name llm-cxg --file llm-cxg.txt
 conda activate llm-cxg
 ```
----
 
 ### 🙏 Acknowledgements
 

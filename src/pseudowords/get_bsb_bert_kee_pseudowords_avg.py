@@ -1,8 +1,9 @@
-"""
-Bert Coercion
-"""
+'''
+This code is based on the codes from this repository:
+https://github.com/tai314159/PWIBM-Putting-Words-in-Bert-s-Mouth
+It has been extended to fit the need of construction detection.
+'''
 import argparse
-import csv
 import itertools
 import random
 from typing import List, Tuple, TextIO
@@ -11,7 +12,6 @@ from transformers import AutoTokenizer
 from transformers import BertTokenizer, BertForMaskedLM
 from transformers import FillMaskPipeline
 from transformers import get_linear_schedule_with_warmup
-from transformers import AdamW
 import torch
 import torch.nn as nn
 import torch.optim
@@ -20,14 +20,9 @@ import jsonlines
 import json
 import numpy as np
 import os
-import sklearn
-from sklearn.metrics.pairwise import cosine_similarity
-from scipy import spatial
-from sklearn.metrics import mean_squared_error
 import pickle
 import nltk
 nltk.download("punkt")
-from nltk.tokenize import word_tokenize
 
 NEW_TOKEN = '#TOKEN#'
 
@@ -72,9 +67,6 @@ class DataBuilder:
 
     def encode(self, text: str, max_length=None):
         tokens = text.split()
-        #tokens = word_tokenize(text)
-        #if '[MASK]' in text:
-        #    tokens = rejoin_mask(tokens)
         # Build token indices
         _, gather_indexes = self._manual_tokenize(tokens)
         # Tokenization
@@ -130,15 +122,10 @@ class Coercion:
 
         new_queries = []
         queries = []
-        #targets1 = []
         vec_targets = []
 
         # Print targets (and their id's) and the query (and its id)
         for entry in group:
-            # Make sure there are no tokenization mismatches between target and query:
-            #entry["target1"] = " ".join(word_tokenize(entry["target1"])).replace("``", '"')
-            #entry["query"] = " ".join(rejoin_mask(word_tokenize(entry["query"]))).replace("``", '"')
-
             print(f'target1: {entry["target1"]}, {entry["target1_idx"]}')
             print(f'query: {entry["query"]}, {entry["query_idx"]}')
 
@@ -156,8 +143,6 @@ class Coercion:
                 new_queries = pickle.load(file)
             with open(DOC_PATH + "queries_bsbbert_" + str(group_no), "rb") as file:
                 queries = pickle.load(file)
-            #with open(DOC_PATH + "targets1_" + str(group_no), "rb") as file:
-            #    targets1 = pickle.load(file)
             with open(DOC_PATH + "vec_targets_bsbbert_" + str(group_no), "rb") as file:
                 vec_targets = pickle.load(file)
 
@@ -178,14 +163,11 @@ class Coercion:
                     print(query)
                     new_queries.append(new_query)
                     queries.append(query)
-                    #targets1.append((entry["target1"], entry["target1_idx"]))
 
             with open(DOC_PATH + "new_queries_bsbbert_" + str(group_no), "wb") as file:
                 pickle.dump(new_queries, file)
             with open(DOC_PATH + "queries_bsbbert_" + str(group_no), "wb") as file:
                 pickle.dump(queries, file)
-            #with open(DOC_PATH + "targets1_" + str(group_no), "wb") as file:
-            #    pickle.dump(targets1, file)
             with open(DOC_PATH + "vec_targets_bsbbert_" + str(group_no), "wb") as file:
                 pickle.dump(vec_targets, file)
 
@@ -359,9 +341,7 @@ def get_lowest_loss_arrays(z_list, loss_list):
 
     loss_list = list(map(float, loss_list))
 
-    # print(z_array)
     for vec in z_array:
-        # print("vec.shape", vec.shape) #(768,)
         z_list.append(vec)
 
     # empty lists

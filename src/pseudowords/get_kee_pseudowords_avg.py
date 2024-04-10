@@ -1,3 +1,8 @@
+'''
+This code is based on the codes from this repository:
+https://github.com/tai314159/PWIBM-Putting-Words-in-Bert-s-Mouth
+It has been extended to fit the need of construction detection.
+'''
 import argparse
 import itertools
 import random
@@ -26,8 +31,6 @@ logging.basicConfig(
     level=logging.INFO,
     handlers=logging_handlers
 )
-
-from transformers.convert_slow_tokenizer import MBart50Converter, convert_slow_tokenizer
 
 NEW_TOKEN = AddedToken('#TOKEN#', single_word=False, lstrip=True, rstrip=True, normalized=False)
 
@@ -74,8 +77,6 @@ class DataBuilder:
     def encode(self, text: str, max_length=None):
         tokens = text.split()
         if max_length:
-            # Note by huggingface:
-            #  "We strongly recommend passing in an `attention_mask` since your input_ids may be padded."
             encode_dict = self.tokenizer(
                 tokens, return_attention_mask=True,
                 return_token_type_ids=False, return_tensors='pt',
@@ -196,7 +197,7 @@ class Coercion:
                                                        num_return_sequences=5,
                                                        num_beams=20, output_scores=True, return_dict_in_generate=True)
                     output_strings = tokenizer.batch_decode(outputs.sequences,
-                                                            clean_up_tokenization_spaces=True)  # , skip_special_tokens=True)
+                                                            clean_up_tokenization_spaces=True)
                     output_probs = torch.exp(outputs.sequences_scores)
                     print([f'output: {output}, score: {score}'
                            for output, score in zip(output_strings, output_probs)])
@@ -254,7 +255,6 @@ class Coercion:
         mean_losses = []
         with tqdm(total=100, desc="Train Loss", position=2, disable=True) as loss_bar:
             with trange(epoch, position=1, desc="Epoch", leave=True, disable=False) as epoch_bar:
-            #for _ in trange(epoch, position=1, desc="Epoch", leave=True, disable=False):
                 for _ in epoch_bar:
                     losses = []
                     for batched_input_ids, batched_labels, batched_vec_targets, \

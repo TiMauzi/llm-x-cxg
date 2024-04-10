@@ -1,4 +1,0 @@
-
-[submodule "libs/pwibm"]
-	path = libs/pwibm
-	url = https://github.com/tai314159/PWIBM-Putting-Words-in-Bert-s-Mouth

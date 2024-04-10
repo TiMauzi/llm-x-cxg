@@ -1,7 +1,7 @@
 # 🦙 `llm-x-cxg`: Language Models and Construction Grammar 📖
 ## 🏭 Text Generation and Construction Detection 👀
 
-[![Static Badge](https://zenodo.org/badge/DOI/10.5281/zenodo.10957259.svg)](https://doi.org/10.5281/zenodo.10957259/)
+[![Static Badge](https://zenodo.org/badge/DOI/10.5281/zenodo.10957259.svg)](https://doi.org/10.5281/zenodo.10957259)
 [![Static Badge](https://img.shields.io/badge/license-CC--4.0--BY-lightgrey.svg)](https://creativecommons.org/licenses/by/4.0/legalcode)
 
 This repository contains code and output data from probing and experimenting with construction grammar (CxG) and large

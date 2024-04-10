@@ -1,9 +1,7 @@
 # 🦙 `llm-x-cxg`: Language Models and Construction Grammar 📖
 ## 🏭 Text Generation and Construction Detection 👀
 
----
-
-[![Static Badge](https://zenodo.org/badge/DOI/10.5281/zenodo.10957260.svg)](https://doi.org/10.5281/zenodo.10957259/)
+[![Static Badge](https://zenodo.org/badge/DOI/10.5281/zenodo.10957259.svg)](https://doi.org/10.5281/zenodo.10957259/)
 [![Static Badge](https://img.shields.io/badge/license-CC--4.0--BY-lightgrey.svg)](https://creativecommons.org/licenses/by/4.0/legalcode)
 
 This repository contains code and output data from probing and experimenting with construction grammar (CxG) and large
@@ -16,7 +14,6 @@ supervising this work!
 Each sub-directory contains a `readme.md` file outlining each file's content. 
 For citation of this work, please see the BibLaTeX snippet below.
 
----
 
 ### 💡 Abstract from the Thesis
 
@@ -41,12 +38,14 @@ conda create --name llm-cxg --file llm-cxg.txt
 conda activate llm-cxg
 ```
 
+
 ### 🙏 Acknowledgements
 
 Both `src/pseudowords/get_bsb_bert_kee_pseudowords_avg.py` and `src/pseudowords/get_kee_pseudowords_avg.py` are based 
 on the BERT-based 
 [pseudoword tool by Karidi et al. (2021)](https://github.com/tai314159/PWIBM-Putting-Words-in-Bert-s-Mouth). All
 other files are built by the creator of `llm-x-cxg` (this repository).
+
 
 ### 📑 Citation
 
